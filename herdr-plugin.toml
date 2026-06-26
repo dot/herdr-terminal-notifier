@@ -1,0 +1,12 @@
+id = "dot.terminal-notifier"
+name = "terminal-notifier notifications"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Customizable macOS notifications for herdr agent state changes via terminal-notifier"
+platforms = ["macos"]
+
+# Fire a notification whenever a pane's agent status changes (working/blocked/idle/done).
+# The handler decides which transitions actually notify (see config: TRIGGER_STATUSES).
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bash", "bin/notify.sh"]
