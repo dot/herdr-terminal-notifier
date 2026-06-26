@@ -42,17 +42,17 @@ ICON_MODE="contentImage" # contentImage | appIcon
 
 # Per-status presentation. Placeholders:
 #   {agent} {workspace} {worktree} {tab} {pane} {session} {old_status} {new_status} {cwd}
-TITLE_BLOCKED="⏳ {agent} が入力待ち"
+TITLE_BLOCKED="⏳ {agent} needs input"
 BODY_BLOCKED="{workspace} · {worktree}"
 ICON_BLOCKED="assets/icons/blocked.png"
 SOUND_BLOCKED="Glass"
 
-TITLE_DONE="✅ {agent} 完了"
+TITLE_DONE="✅ {agent} done"
 BODY_DONE="{workspace} · {worktree}"
 ICON_DONE="assets/icons/done.png"
 SOUND_DONE="Hero"
 
-TITLE_WORKING="🔧 {agent} 作業中"
+TITLE_WORKING="🔧 {agent} working"
 BODY_WORKING="{workspace} · {worktree}"
 ICON_WORKING="assets/icons/working.png"
 SOUND_WORKING="none"

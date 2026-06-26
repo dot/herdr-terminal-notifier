@@ -38,7 +38,8 @@ case "$mode" in
     ;;
   --install|*)
     echo "installing $PLUGIN_ID from $GITHUB_SLUG"
-    "$HERDR" plugin install "$GITHUB_SLUG"
+    # --yes: required when stdin is non-interactive (CI / chezmoi / activation)
+    "$HERDR" plugin install "$GITHUB_SLUG" --yes
     ;;
 esac
 

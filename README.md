@@ -8,8 +8,8 @@ When an agent in any workspace becomes **blocked** (waiting for your input) or
 (not the generic terminal icon), and clicking it jumps straight to that pane.
 
 ```
-🐑  ⏳ claude が入力待ち
-    my-project · feature-x          [表示]
+🐑  ⏳ claude needs input
+    my-project · feature-x          [Show]
 ```
 
 ## Why the bundled notifier app
@@ -23,7 +23,7 @@ The usual tricks don't help on modern macOS:
   supports no icon/sound/click customization at all.
 
 So this plugin ships **`assets/HerdrNotify.app`** — a copy of `terminal-notifier`
-rebranded with the herdr icon and its own bundle id (`com.dot.herdr-notify`). The
+rebranded with the herdr icon and its own bundle id (`codes.dot.herdr-notify`). The
 plugin posts through it, so the notification is genuinely "from herdr" and shows
 the herdr logo. No Homebrew `terminal-notifier` needed at runtime.
 
@@ -36,8 +36,19 @@ the herdr logo. No Homebrew `terminal-notifier` needed at runtime.
   brew install jq
   ```
 
-First notification: macOS asks once to allow notifications for **herdr** (System
-Settings → Notifications). This per-machine grant can't be scripted.
+### Grant notification permission (required, once per machine)
+
+**No toast appears until you allow notifications for the app.** macOS gates
+notifications per app, and this can't be scripted. After installing:
+
+1. Trigger one notification (e.g. let an agent go blocked), or run
+   `assets/HerdrNotify.app/Contents/MacOS/terminal-notifier -title hi -message x`.
+2. Open **System Settings → Notifications → herdr** and turn **Allow Notifications** on
+   (set the style to Alerts/Banners as you like).
+
+The grant is keyed to the bundle id (`codes.dot.herdr-notify`), so it persists across
+plugin updates and even if the app moves on disk. If notifications silently stop,
+re-check this setting and that Focus / Do Not Disturb is off.
 
 ## Install
 
