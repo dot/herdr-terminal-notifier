@@ -18,9 +18,29 @@ mkdir -p "$STATE_DIR"
 
 log() { printf '[terminal-notifier] %s\n' "$*" >&2; }
 
-# --- 0. dependency check (do not abort install if missing) -------------------
-if ! command -v terminal-notifier >/dev/null 2>&1; then
-  log "terminal-notifier not found. Install it: brew install terminal-notifier"
+# --- 0. resolve the notifier binary -----------------------------------------
+# Prefer the bundled HerdrNotify.app (custom herdr icon + own bundle id), then
+# an explicit override, then a system terminal-notifier. The bundled app is
+# what makes the notification's LEFT icon the herdr logo instead of a terminal.
+BUNDLED_APP="$ROOT/assets/HerdrNotify.app"
+BUNDLED_BIN="$BUNDLED_APP/Contents/MacOS/terminal-notifier"
+if [ -n "${NOTIFIER:-}" ] && [ -x "$NOTIFIER" ]; then
+  NOTIFIER_BIN="$NOTIFIER"
+elif [ -x "$BUNDLED_BIN" ]; then
+  NOTIFIER_BIN="$BUNDLED_BIN"
+  # First run after install/checkout: register the bundle with Launch Services
+  # so macOS attributes notifications (and the icon) to it. Guarded by a
+  # sentinel so this only costs a fork once per app revision.
+  sentinel="$STATE_DIR/.notifier-registered"
+  if [ ! -f "$sentinel" ] || [ "$BUNDLED_BIN" -nt "$sentinel" ]; then
+    codesign --force --deep -s - "$BUNDLED_APP" >/dev/null 2>&1 || true
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$BUNDLED_APP" >/dev/null 2>&1 || true
+    : >"$sentinel"
+  fi
+elif command -v terminal-notifier >/dev/null 2>&1; then
+  NOTIFIER_BIN="terminal-notifier"
+else
+  log "no notifier found (bundled HerdrNotify.app missing and no terminal-notifier on PATH)"
   exit 0
 fi
 
@@ -157,4 +177,4 @@ if [ "${ACTIVATE_ON_CLICK:-0}" = "1" ] && [ -n "$pane_id" ]; then
   args+=(-execute "$bin $click")
 fi
 
-terminal-notifier "${args[@]}" >/dev/null 2>&1 || log "terminal-notifier failed"
+"$NOTIFIER_BIN" "${args[@]}" >/dev/null 2>&1 || log "notifier failed"

@@ -5,6 +5,12 @@ min_herdr_version = "0.7.0"
 description = "Customizable macOS notifications for herdr agent state changes via terminal-notifier"
 platforms = ["macos"]
 
+# On GitHub install, register the bundled HerdrNotify.app (custom herdr icon)
+# with Launch Services so macOS shows its icon on notifications.
+[[build]]
+command = ["bash", "scripts/setup-notifier.sh"]
+platforms = ["macos"]
+
 # Fire a notification whenever a pane's agent status changes (working/blocked/idle/done).
 # The handler decides which transitions actually notify (see config: TRIGGER_STATUSES).
 [[events]]

@@ -25,12 +25,16 @@ if "$HERDR" plugin list 2>/dev/null | grep -q "$PLUGIN_ID"; then
   exit 0
 fi
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 mode="${1:---install}"
 case "$mode" in
   --link)
-    path="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    path="${2:-$ROOT}"
     echo "linking $PLUGIN_ID from $path"
     "$HERDR" plugin link "$path"
+    # link skips [[build]], so register the bundled notifier ourselves
+    bash "$ROOT/scripts/setup-notifier.sh" || true
     ;;
   --install|*)
     echo "installing $PLUGIN_ID from $GITHUB_SLUG"
@@ -38,7 +42,5 @@ case "$mode" in
     ;;
 esac
 
-# Remind about runtime deps (declare these in homebrew.nix / Brewfile).
-for dep in terminal-notifier jq; do
-  command -v "$dep" >/dev/null 2>&1 || echo "warning: '$dep' missing — add it to your Brewfile/homebrew.nix" >&2
-done
+# jq is the only runtime dep (terminal-notifier is bundled as HerdrNotify.app).
+command -v jq >/dev/null 2>&1 || echo "warning: 'jq' missing — add it to your Brewfile/homebrew.nix" >&2

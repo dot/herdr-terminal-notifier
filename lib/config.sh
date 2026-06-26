@@ -30,7 +30,14 @@ ACTIVATE_ON_CLICK=1
 # is a coarser fallback if your herdr build dislikes pane targets.
 CLICK_COMMAND="agent focus {pane}"
 
+# Notifier binary. Empty = use the bundled assets/HerdrNotify.app (herdr icon),
+# falling back to a system `terminal-notifier`. Set to an absolute path to use
+# a different notifier build.
+NOTIFIER=""
+
 # contentImage is reliable on modern macOS; appIcon is often ignored. See README.
+# This is the RIGHT-side image; the LEFT app icon comes from the notifier app
+# (the bundled HerdrNotify.app shows the herdr logo).
 ICON_MODE="contentImage" # contentImage | appIcon
 
 # Per-status presentation. Placeholders:
