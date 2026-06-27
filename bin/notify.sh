@@ -28,13 +28,31 @@ if [ -n "${NOTIFIER:-}" ] && [ -x "$NOTIFIER" ]; then
   NOTIFIER_BIN="$NOTIFIER"
 elif [ -x "$BUNDLED_BIN" ]; then
   NOTIFIER_BIN="$BUNDLED_BIN"
-  # First run after install/checkout: register the bundle with Launch Services
-  # so macOS attributes notifications (and the icon) to it. Guarded by a
-  # sentinel so this only costs a fork once per app revision.
+  # Keep the bundle registered with Launch Services so macOS attributes the
+  # notification (and its LEFT icon) to HerdrNotify.app instead of falling back
+  # to the parent terminal's icon (ghostty, Terminal, ...).
+  #
+  # An ad-hoc-signed, non-notarized helper can silently lose its LS registration
+  # over time (reboots, OS updates). When that happens the icon reverts to the
+  # terminal's. A plain "register once per app revision" sentinel never recovers
+  # from that — once stale, it stays stale — so we self-heal on a TTL:
+  #   * no sentinel / bundle newer than sentinel -> re-sign + register (new build)
+  #   * sentinel older than REGISTER_TTL_SECONDS  -> register only (cheap refresh)
+  # lsregister-only on the periodic path avoids re-signing (which would bump the
+  # binary mtime and spuriously trip the "bundle newer" branch every time).
   sentinel="$STATE_DIR/.notifier-registered"
+  lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  register_ttl="${REGISTER_TTL_SECONDS:-21600}" # 6h; bounds how long a stale reg can linger
+  needs_register=0 needs_codesign=0
   if [ ! -f "$sentinel" ] || [ "$BUNDLED_BIN" -nt "$sentinel" ]; then
-    codesign --force --deep -s - "$BUNDLED_APP" >/dev/null 2>&1 || true
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$BUNDLED_APP" >/dev/null 2>&1 || true
+    needs_register=1 needs_codesign=1
+  else
+    sentinel_age=$(( $(date +%s) - $(stat -f %m "$sentinel" 2>/dev/null || echo 0) ))
+    [ "$sentinel_age" -ge "$register_ttl" ] && needs_register=1
+  fi
+  if [ "$needs_register" = 1 ]; then
+    [ "$needs_codesign" = 1 ] && { codesign --force --deep -s - "$BUNDLED_APP" >/dev/null 2>&1 || true; }
+    "$lsregister" -f "$BUNDLED_APP" >/dev/null 2>&1 || true
     : >"$sentinel"
   fi
 elif command -v terminal-notifier >/dev/null 2>&1; then

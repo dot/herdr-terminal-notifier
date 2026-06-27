@@ -69,6 +69,13 @@ Install registers `HerdrNotify.app` with Launch Services (re-sign + `lsregister`
 On `herdr plugin install` this happens via the manifest `[[build]]` step; on
 `link` the handler also self-registers on first event.
 
+An ad-hoc-signed helper can quietly lose that registration over time (reboots,
+OS updates), and macOS then falls back to showing the **parent terminal's** icon
+instead of the herdr logo. To recover without manual intervention, the handler
+re-registers the bundle whenever its registration is older than
+`REGISTER_TTL_SECONDS` (default 6h) — so the icon self-heals within that window
+the next time a notification fires. No cron, daemon, or `chezmoi apply` needed.
+
 ### Avoid double notifications
 
 herdr has its own built-in desktop toast. Turn it off (or to in-terminal) so only
@@ -104,6 +111,7 @@ Key settings:
 | `ACTIVATE_ON_CLICK` | `1` | click notification → focus the agent |
 | `CLICK_COMMAND` | `agent focus {pane}` | `herdr` subcommand run on click |
 | `NOTIFIER` | _(bundled app)_ | absolute path to override the notifier binary |
+| `REGISTER_TTL_SECONDS` | `21600` | refresh Launch Services registration when older (self-heals left icon) |
 | `ICON_MODE` | `contentImage` | right-side image mode (`contentImage`/`appIcon`) |
 | `TITLE_<STATUS>` / `BODY_<STATUS>` | see example | message templates |
 | `ICON_<STATUS>` / `SOUND_<STATUS>` | see example | right-side image / macOS sound |

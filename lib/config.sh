@@ -35,6 +35,13 @@ CLICK_COMMAND="agent focus {pane}"
 # a different notifier build.
 NOTIFIER=""
 
+# How often (seconds) to refresh the bundled app's Launch Services registration.
+# Ad-hoc-signed helpers can lose their registration over time (reboots, OS
+# updates), which makes macOS show the parent terminal's icon instead of the
+# herdr logo. notify.sh re-registers when the sentinel is older than this, so
+# the icon self-heals within REGISTER_TTL_SECONDS of going stale. Default 6h.
+REGISTER_TTL_SECONDS=21600
+
 # contentImage is reliable on modern macOS; appIcon is often ignored. See README.
 # This is the RIGHT-side image; the LEFT app icon comes from the notifier app
 # (the bundled HerdrNotify.app shows the herdr logo).
