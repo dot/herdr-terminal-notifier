@@ -107,6 +107,45 @@ make_min_path() {
   printf '%s' "$dir"
 }
 
+# make_lsappinfo <dir> <bundleid | --garbage | --empty>
+# Writes a fake `lsappinfo` (found via PATH) that answers `front` with a dummy
+# ASN and `info -only bundleid <asn>` with a chosen frontmost bundle id.
+#   <bundleid> -> a normal "CFBundleIdentifier"="<id>" line
+#   --garbage  -> a line with no parseable quoted value (unparsable output)
+#   --empty    -> the key present but no value ("CFBundleIdentifier"=)
+make_lsappinfo() {
+  local dir="$1" mode="$2" line
+  local f="$dir/lsappinfo"
+  case "$mode" in
+    --garbage) line='total garbage no quoted value here' ;;
+    --empty)   line='"CFBundleIdentifier"=' ;;
+    *)         line="\"CFBundleIdentifier\"=\"$mode\"" ;;
+  esac
+  {
+    printf '#!/usr/bin/env bash\n'
+    # shellcheck disable=SC2016  # writing literal shell into the stub, not expanding here
+    printf 'if [ "$1" = front ]; then printf "%%s\\n" "ASN:0x0-0x12345:"; exit 0; fi\n'
+    # shellcheck disable=SC2016  # writing literal shell into the stub, not expanding here
+    printf 'if [ "$1" = info ]; then printf "%%s\\n" %q; exit 0; fi\n' "$line"
+    printf 'exit 0\n'
+  } >"$f"
+  chmod +x "$f"
+  printf '%s' "$f"
+}
+
+# make_path_with_jq <dir>
+# Like make_min_path but ALSO includes jq (and cut), for exercising notify.sh's
+# full path on a restricted PATH that deliberately omits a tool (e.g. lsappinfo).
+make_path_with_jq() {
+  local dir="$1" src
+  make_min_path "$dir" >/dev/null
+  for src in jq cut; do
+    local p; p="$(command -v "$src" 2>/dev/null || true)"
+    [ -n "$p" ] && ln -sf "$p" "$dir/$src"
+  done
+  printf '%s' "$dir"
+}
+
 # run_notify — runs notify.sh, capturing stderr into REPLY_ERR and exit in REPLY_RC.
 # Args are extra "VAR=value" env assignments. Uses globals set by the caller:
 #   T (temp dir), EVENT_JSON, CONTEXT_JSON, HERDR_BIN, TN_CONFIG, [DEBUG], [PATH_OVERRIDE]
@@ -166,8 +205,11 @@ test_focused_drop() {
   new_temp
   local n; n="$(make_notifier "$T/bin")"
   HERDR_BIN="$(make_herdr "$T/bin" "w1")"   # w1 is focused
+  make_lsappinfo "$T/bin" "com.test.term" >/dev/null   # terminal IS frontmost
+  PATH_OVERRIDE="$T/bin:$PATH"                          # find the lsappinfo stub
   TN_CONFIG="$T/config.env"
-  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=1'
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' \
+    'SUPPRESS_FOCUSED=1' 'TERMINAL_APP_IDS="com.test.term"'
   EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
   CONTEXT_JSON='{}'
   DEBUG_FLAG=1   # focused drops are high-volume: logged only under DEBUG
@@ -175,7 +217,8 @@ test_focused_drop() {
   assert_eq "$REPLY_RC" 0 "exit 0 on focused suppression"
   assert_contains "$REPLY_ERR" "drop reason=focused" "logs focused drop reason"
   assert_contains "$REPLY_ERR" "w1" "focused drop names workspace"
-  [ ! -f "$T/bin/notifier-args" ] || fail "notifier must not fire when focused"
+  assert_contains "$REPLY_ERR" "frontmost=com.test.term" "focused drop names the frontmost terminal"
+  [ ! -f "$T/bin/notifier-args" ] || fail "notifier must not fire when focused AND terminal frontmost"
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
@@ -378,6 +421,92 @@ test_workspace_id_via_pane_field_not_ctx() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- issue #3: frontmost-aware focus suppression -----------------------------
+# SUPPRESS_FOCUSED must mute only when BOTH the event workspace is the focused
+# herdr workspace AND a herdr-hosting terminal is the frontmost macOS app.
+# (Appended at the END to minimize merge conflicts with parallel work on #2.)
+
+# Shared setup: focused workspace w1, triggering event on w1. Callers add an
+# lsappinfo stub + TERMINAL_APP_IDS to control the frontmost-app half.
+_setup_focus_case() { # <lsappinfo-mode|SKIP> [extra config lines...]
+  local mode="$1"; shift
+  new_temp
+  _FOCUS_N="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin" "w1")"   # w1 is focused inside herdr
+  if [ "$mode" != "SKIP" ]; then
+    make_lsappinfo "$T/bin" "$mode" >/dev/null
+  fi
+  PATH_OVERRIDE="$T/bin:$PATH"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$_FOCUS_N" 'TRIGGER_STATUSES="blocked done"' "$@"
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  DEBUG_FLAG=1
+}
+
+# Terminal frontmost -> both conditions met -> suppress.
+test_focus_terminal_frontmost_drop() {
+  CURRENT_TEST="focus_terminal_frontmost_drop"
+  _setup_focus_case "com.mitchellh.ghostty" \
+    'SUPPRESS_FOCUSED=1' 'TERMINAL_APP_IDS="com.mitchellh.ghostty com.apple.Terminal"'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 when suppressed"
+  assert_contains "$REPLY_ERR" "drop reason=focused" "suppresses when terminal is frontmost"
+  assert_contains "$REPLY_ERR" "frontmost=com.mitchellh.ghostty" "names the frontmost terminal"
+  [ ! -f "$T/bin/notifier-args" ] || fail "notifier must not fire when suppressed"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# Another app frontmost (user switched to the browser) -> notify anyway.
+test_focus_other_app_notify() {
+  CURRENT_TEST="focus_other_app_notify"
+  _setup_focus_case "com.google.Chrome" \
+    'SUPPRESS_FOCUSED=1' 'TERMINAL_APP_IDS="com.mitchellh.ghostty com.apple.Terminal"'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0"
+  assert_not_contains "$REPLY_ERR" "drop reason=focused" "must NOT suppress when terminal is not frontmost"
+  [ -f "$T/bin/notifier-args" ] || fail "notifier must fire when the terminal is not frontmost"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# lsappinfo missing entirely -> fail open -> notify.
+test_focus_lsappinfo_missing_notify() {
+  CURRENT_TEST="focus_lsappinfo_missing_notify"
+  _setup_focus_case "SKIP" \
+    'SUPPRESS_FOCUSED=1' 'TERMINAL_APP_IDS="com.mitchellh.ghostty"'
+  # Restricted PATH with jq but NO lsappinfo (and no $T/bin, so no stub either).
+  PATH_OVERRIDE="$(make_path_with_jq "$T/nols")"
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 (fail open)"
+  assert_not_contains "$REPLY_ERR" "drop reason=focused" "fail open when lsappinfo missing"
+  [ -f "$T/bin/notifier-args" ] || fail "notifier must fire when frontmost detection is unavailable"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# lsappinfo present but emits unparsable output -> fail open -> notify.
+test_focus_lsappinfo_garbage_notify() {
+  CURRENT_TEST="focus_lsappinfo_garbage_notify"
+  _setup_focus_case "--garbage" \
+    'SUPPRESS_FOCUSED=1' 'TERMINAL_APP_IDS="com.mitchellh.ghostty"'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 (fail open)"
+  assert_not_contains "$REPLY_ERR" "drop reason=focused" "fail open on unparsable lsappinfo output"
+  [ -f "$T/bin/notifier-args" ] || fail "notifier must fire on unparsable frontmost output"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# SUPPRESS_FOCUSED=0 -> never suppress, even with terminal frontmost + focused ws.
+test_focus_suppress_disabled_notify() {
+  CURRENT_TEST="focus_suppress_disabled_notify"
+  _setup_focus_case "com.mitchellh.ghostty" \
+    'SUPPRESS_FOCUSED=0' 'TERMINAL_APP_IDS="com.mitchellh.ghostty"'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0"
+  assert_not_contains "$REPLY_ERR" "drop reason=focused" "SUPPRESS_FOCUSED=0 never suppresses"
+  [ -f "$T/bin/notifier-args" ] || fail "notifier must fire when SUPPRESS_FOCUSED=0"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -390,7 +519,12 @@ for t in \
   test_debug_dump \
   test_missing_pane_id_loud_drop \
   test_missing_status_enriched_via_pane_field \
-  test_workspace_id_via_pane_field_not_ctx; do
+  test_workspace_id_via_pane_field_not_ctx \
+  test_focus_terminal_frontmost_drop \
+  test_focus_other_app_notify \
+  test_focus_lsappinfo_missing_notify \
+  test_focus_lsappinfo_garbage_notify \
+  test_focus_suppress_disabled_notify; do
   PRE_FAIL="$FAIL"
   "$t"
 done

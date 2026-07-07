@@ -118,7 +118,8 @@ Key settings:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `TRIGGER_STATUSES` | `"blocked done"` | which new statuses notify |
-| `SUPPRESS_FOCUSED` | `1` | mute the workspace you are viewing |
+| `SUPPRESS_FOCUSED` | `1` | mute only when the workspace is focused in herdr **and** the terminal is frontmost |
+| `TERMINAL_APP_IDS` | common terminals | bundle ids that host herdr, for the frontmost check (empty/undetectable ⇒ notify) |
 | `DEBOUNCE_SECONDS` | `2` | drop repeated `(pane,status)` within window |
 | `ACTIVATE_ON_CLICK` | `1` | click notification → focus the agent |
 | `CLICK_COMMAND` | `agent focus {pane}` | `herdr` subcommand run on click |
@@ -134,6 +135,16 @@ status (`BLOCKED`, `DONE`, …); `*_DEFAULT` covers the rest.
 
 The **left** icon is always the herdr logo (the notifier app). `ICON_*` controls
 the optional **right-side** status image.
+
+**Focus suppression** (`SUPPRESS_FOCUSED=1`) mutes an event only when its
+workspace is the one focused *inside herdr* **and** a terminal listed in
+`TERMINAL_APP_IDS` is the frontmost macOS app. That way, starting an agent and
+switching to the browser still delivers its blocked/done notification — herdr
+keeps the workspace "focused" even though you are no longer looking at it. If the
+frontmost app can't be detected (no `lsappinfo`, or `TERMINAL_APP_IDS` empty),
+the notification is delivered (fail open: a duplicate beats a missed alert). Add
+your terminal's bundle id to `TERMINAL_APP_IDS` if it isn't in the default list
+(`osascript -e 'id of app "Ghostty"'`).
 
 ## Customizing the herdr icon
 

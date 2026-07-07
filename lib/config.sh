@@ -18,7 +18,19 @@
 TRIGGER_STATUSES="blocked done"
 
 # Suppress notifications for the workspace you are currently looking at.
+# This fires only when BOTH the event's workspace is the focused herdr workspace
+# AND a herdr-hosting terminal (TERMINAL_APP_IDS) is the frontmost macOS app — so
+# switching away to the browser while an agent runs still lets its blocked/done
+# notification through (the workspace stays "focused" inside herdr, but you are
+# not looking at the terminal).
 SUPPRESS_FOCUSED=1
+
+# Bundle ids (space separated) of terminal apps that can host herdr, used by the
+# frontmost check above. If frontmost detection fails (lsappinfo missing/garbage)
+# or this is empty, suppression is skipped and the notification is delivered
+# (fail open: a duplicate beats a silently missed alert). Find an app's id with:
+#   osascript -e 'id of app "Ghostty"'
+TERMINAL_APP_IDS="com.mitchellh.ghostty com.apple.Terminal com.googlecode.iterm2 net.kovidgoyal.kitty com.github.wez.wezterm org.alacritty"
 
 # Ignore a repeated (pane,status) within this many seconds (flap guard).
 DEBOUNCE_SECONDS=2
