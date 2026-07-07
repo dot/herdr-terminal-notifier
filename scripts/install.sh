@@ -30,11 +30,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mode="${1:---install}"
 case "$mode" in
   --link)
-    path="${2:-$ROOT}"
+    # Normalize to an absolute path so the link and the setup call below both
+    # refer to the linked checkout (herdr plugin link takes the path as-is).
+    path="$(cd "${2:-$ROOT}" && pwd)"
     echo "linking $PLUGIN_ID from $path"
     "$HERDR" plugin link "$path"
-    # link skips [[build]], so register the bundled notifier ourselves
-    bash "$ROOT/scripts/setup-notifier.sh" || true
+    # link skips [[build]], so register the linked checkout's notifier ourselves
+    bash "$path/scripts/setup-notifier.sh" || true
     ;;
   --install|*)
     echo "installing $PLUGIN_ID from $GITHUB_SLUG"
