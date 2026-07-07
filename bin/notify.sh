@@ -268,7 +268,16 @@ if [ -n "$pane_id" ]; then
 fi
 
 # --- 7. pick the per-status template and expand placeholders -----------------
-status_uc="$(printf '%s' "$new_status" | tr '[:lower:]' '[:upper:]')"
+# status_uc is used ONLY to build a shell variable NAME (${PREFIX}_${status_uc}),
+# so it must be a valid identifier. A future herdr status can carry a character
+# illegal in a variable name (e.g. `needs-input`, `waiting.user`); left raw, the
+# indirect expansion ${!var} below is a fatal bash "bad substitution" that, under
+# set -e, would crash the handler instead of falling back to *_DEFAULT. So map
+# any non-[A-Z0-9] to '_' after upper-casing. printf '%s' emits no trailing
+# newline, so `tr -c 'A-Z0-9' '_'` has none to translate into a stray trailing
+# '_'. The RAW $new_status is untouched and still drives TRIGGER matching, the
+# {new_status} placeholder, and the debounce/laststatus stamps.
+status_uc="$(printf '%s' "$new_status" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')"
 pick() { # pick VAR_PREFIX -> value of ${PREFIX_STATUS} or ${PREFIX_DEFAULT}
   local var="${1}_${status_uc}" def="${1}_DEFAULT"
   printf '%s' "${!var:-${!def:-}}"

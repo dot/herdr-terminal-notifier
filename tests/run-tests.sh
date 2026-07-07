@@ -803,6 +803,64 @@ test_corrupt_debounce_stamp_still_notifies() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- issue #10: pick() must survive statuses with non-variable-name chars -----
+# A future herdr status can carry a character invalid in a shell variable name
+# (e.g. `needs-input`, `waiting.user`). Section 7 builds a variable NAME from the
+# status (TITLE_<STATUS> via indirect expansion); a raw hyphen there is a fatal
+# bash "bad substitution" that, under set -e, crashes the handler instead of
+# falling back to the *_DEFAULT template. Sanitizing the NAME (uppercase then map
+# non-[A-Z0-9] to '_') must fix it WITHOUT touching the raw status used for
+# TRIGGER matching, {new_status} expansion, or the debounce/laststatus stamps.
+# (Appended at the END to minimize merge conflicts with parallel work.)
+
+# A triggering status with a hyphen and NO explicit TITLE_NEEDS_INPUT must not
+# crash: the handler exits 0, the notifier fires, and TITLE_DEFAULT is used with
+# {new_status} expanded to the RAW `needs-input` (sanitizing is name-only).
+test_dashed_status_falls_back_to_default() {
+  CURRENT_TEST="dashed_status_falls_back_to_default"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="needs-input"' 'SUPPRESS_FOCUSED=0' \
+    'ACTIVATE_ON_CLICK=0' 'TITLE_DEFAULT="{agent}: {new_status}"'
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"needs-input","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on a hyphenated status (no bad-substitution crash)"
+  if [ -f "$T/bin/notifier-args" ]; then
+    local args; args="$(cat "$T/bin/notifier-args")"
+    assert_contains "$args" "claude: needs-input" "TITLE_DEFAULT used with raw {new_status}=needs-input"
+  else
+    fail "notifier must fire on a triggering hyphenated status"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# A per-status template keyed by the SANITIZED name (TITLE_NEEDS_INPUT for status
+# `needs-input`) must resolve and win over TITLE_DEFAULT.
+test_dashed_status_uses_sanitized_template() {
+  CURRENT_TEST="dashed_status_uses_sanitized_template"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="needs-input"' 'SUPPRESS_FOCUSED=0' \
+    'ACTIVATE_ON_CLICK=0' 'TITLE_NEEDS_INPUT="NEEDS {agent} ({new_status})"' 'TITLE_DEFAULT="{agent}: {new_status}"'
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"needs-input","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on a hyphenated status with a sanitized-name template"
+  if [ -f "$T/bin/notifier-args" ]; then
+    local args; args="$(cat "$T/bin/notifier-args")"
+    assert_contains "$args" "NEEDS claude (needs-input)" "TITLE_NEEDS_INPUT resolved for status needs-input"
+    assert_not_contains "$args" "claude: needs-input" "sanitized-name template wins over TITLE_DEFAULT"
+  else
+    fail "notifier must fire on a triggering hyphenated status"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -830,7 +888,9 @@ for t in \
   test_click_execute_happy_path \
   test_click_execute_hostile_values \
   test_click_execute_spaced_bin_path \
-  test_corrupt_debounce_stamp_still_notifies; do
+  test_corrupt_debounce_stamp_still_notifies \
+  test_dashed_status_falls_back_to_default \
+  test_dashed_status_uses_sanitized_template; do
   PRE_FAIL="$FAIL"
   "$t"
 done
