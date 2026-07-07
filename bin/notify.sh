@@ -36,10 +36,17 @@ elif [ -x "$BUNDLED_BIN" ]; then
   # over time (reboots, OS updates). When that happens the icon reverts to the
   # terminal's. A plain "register once per app revision" sentinel never recovers
   # from that — once stale, it stays stale — so we self-heal on a TTL:
-  #   * no sentinel / bundle newer than sentinel -> re-sign + register (new build)
+  #   * no sentinel / bundle newer than sentinel -> new build: verify the
+  #     signature and re-sign (ad-hoc) ONLY if it is invalid, then register
   #   * sentinel older than REGISTER_TTL_SECONDS  -> register only (cheap refresh)
-  # lsregister-only on the periodic path avoids re-signing (which would bump the
-  # binary mtime and spuriously trip the "bundle newer" branch every time).
+  # Re-signing is verify-gated because an ad-hoc signature gets a fresh CDHash
+  # each time, which changes the identity macOS keys the notification (TCC) grant
+  # to — a needless re-sign can drop the grant. lsregister-only on the periodic
+  # path likewise avoids re-signing.
+  # Termination: the sentinel is refreshed (: >sentinel) at the end of the branch
+  # regardless of whether we signed, so its mtime lands newer than the bundle's;
+  # the next event therefore takes the cheap TTL path, never re-entering the
+  # "bundle newer" branch on every event.
   sentinel="$STATE_DIR/.notifier-registered"
   lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
   register_ttl="${REGISTER_TTL_SECONDS:-21600}" # 6h; bounds how long a stale reg can linger
@@ -51,7 +58,10 @@ elif [ -x "$BUNDLED_BIN" ]; then
     [ "$sentinel_age" -ge "$register_ttl" ] && needs_register=1
   fi
   if [ "$needs_register" = 1 ]; then
-    [ "$needs_codesign" = 1 ] && { codesign --force --deep -s - "$BUNDLED_APP" >/dev/null 2>&1 || true; }
+    if [ "$needs_codesign" = 1 ] && ! codesign --verify --deep "$BUNDLED_APP" >/dev/null 2>&1; then
+      codesign --force --deep -s - "$BUNDLED_APP" >/dev/null 2>&1 || true
+      log "re-signed HerdrNotify.app (ad-hoc); if desktop notifications stop, re-approve HerdrNotify in System Settings -> Notifications"
+    fi
     "$lsregister" -f "$BUNDLED_APP" >/dev/null 2>&1 || true
     : >"$sentinel"
   fi

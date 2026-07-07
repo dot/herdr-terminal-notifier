@@ -50,6 +50,14 @@ The grant is keyed to the bundle id (`codes.dot.herdr-notify`), so it persists a
 plugin updates and even if the app moves on disk. If notifications silently stop,
 re-check this setting and that Focus / Do Not Disturb is off.
 
+> **Re-signing may reset the grant.** The app is ad-hoc signed, and every re-sign
+> mints a fresh code signature (CDHash) that macOS can treat as a different app —
+> silently dropping the notification grant. To avoid that, the plugin re-signs
+> **only when the existing signature is invalid** (setup/install and the handler
+> both verify first). If you deliberately re-sign — e.g. after swapping the icon
+> (`scripts/setup-notifier.sh` with an invalid/absent signature) — and toasts stop,
+> re-approve **HerdrNotify** under **System Settings → Notifications**.
+
 ## Install
 
 ```sh
