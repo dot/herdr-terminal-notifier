@@ -88,6 +88,18 @@ _tn_default REGISTER_TTL_SECONDS "21600"
 # (the bundled HerdrNotify.app shows the herdr logo).
 _tn_default ICON_MODE "contentImage" # contentImage | appIcon
 
+# Notification group key (template, same placeholders as the titles below).
+# terminal-notifier REPLACES any earlier notification sharing this -group, so
+# the default "{pane}" keeps one live notification per pane. Widen it so a later
+# transition does not hide an earlier unread one — e.g. "{pane}-{new_status}" so
+# a `done` and a `blocked` from the same pane occupy distinct groups (the "don't
+# let done hide blocked" recipe). Set GROUP="" in a config file to disable
+# grouping entirely (every notification stacks; note an env `export GROUP=`
+# counts as unset and keeps this default — set it in a config file to force
+# empty). The default expands empty when a pane has no id, so no -group is sent
+# then, exactly as before.
+_tn_default GROUP "{pane}"
+
 # Per-status presentation. Placeholders:
 #   {agent} {workspace} {worktree} {tab} {pane} {session} {old_status} {new_status} {cwd}
 _tn_default TITLE_BLOCKED "⏳ {agent} needs input"

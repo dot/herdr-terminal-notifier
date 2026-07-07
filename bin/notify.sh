@@ -332,8 +332,21 @@ icon="$(pick ICON)"
 sound="$(pick SOUND)"
 
 # --- 8. fire terminal-notifier ----------------------------------------------
+# -group makes terminal-notifier REPLACE the pane's previous notification. The
+# group key is a template (GROUP, expanded like title/body) so the user controls
+# how coarse that replacement is: the default "{pane}" keeps it per-pane (a done
+# replaces the same pane's earlier notification, current behavior), while a wider
+# key like "{pane}-{new_status}" gives blocked and done distinct groups so a done
+# never hides a still-unread blocked. -group is passed ONLY when the expanded key
+# is non-empty; GROUP="" (set in a config file) therefore disables grouping and
+# every notification stacks. Default "{pane}" with an empty pane_id expands to ""
+# -> no -group, identical to the previous `[ -n "$pane_id" ]` gate.
 args=(-title "$title" -message "$body")
-[ -n "$pane_id" ] && args+=(-group "$pane_id")
+# GROUP is a config key (set in lib/config.sh); SC2153 mistakes it for a typo of
+# the local `group` because the names differ only in case.
+# shellcheck disable=SC2153
+group="$(expand "$GROUP")"
+[ -n "$group" ] && args+=(-group "$group")
 [ -n "$sound" ] && [ "$sound" != "none" ] && args+=(-sound "$sound")
 
 if [ -n "$icon" ]; then

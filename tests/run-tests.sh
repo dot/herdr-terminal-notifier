@@ -920,6 +920,85 @@ test_state_sweep_not_repeated_same_day() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- issue #13: configurable -group template (done must not hide blocked) -----
+# Section 8 sets -group so terminal-notifier replaces the pane's previous
+# notification. With the default GROUP="{pane}" that stays per-pane (current
+# behavior), but a user can widen the key (e.g. "{pane}-{new_status}") so a
+# `done` no longer replaces a still-unread `blocked`, or set GROUP="" to disable
+# grouping entirely. The group string expands the same placeholders as the
+# title/body templates and -group is passed only when it resolves non-empty.
+# (Appended at the END to minimize merge conflicts with parallel work.)
+
+# _group_arg <notifier-args-file> -> the argv word following "-group" (or empty).
+# notifier-args is one argv word per line (the stub does printf '%s\n' "$@").
+_group_arg() { awk 'p=="-group"{print; exit} {p=$0}' "$1"; }
+
+# Default GROUP="{pane}" must keep the current per-pane grouping: -group <pane_id>.
+test_group_default_is_pane() {
+  CURRENT_TEST="group_default_is_pane"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  # No GROUP set: the built-in default "{pane}" applies.
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' 'ACTIVATE_ON_CLICK=0'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on happy path"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_eq "$(_group_arg "$T/bin/notifier-args")" "p1" "default GROUP={pane} yields -group <pane_id>"
+  else
+    fail "notifier must fire on a triggering event"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# A widened GROUP template ("{pane}-{new_status}") must expand its placeholders,
+# so a done and a blocked from the same pane land in DIFFERENT groups (neither
+# replaces the other in Notification Center).
+test_group_template_expands() {
+  CURRENT_TEST="group_template_expands"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'ACTIVATE_ON_CLICK=0' 'GROUP="{pane}-{new_status}"'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_eq "$(_group_arg "$T/bin/notifier-args")" "p1-done" "GROUP template expands {pane}/{new_status}"
+  else
+    fail "notifier must fire on a triggering event"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# GROUP="" (set in a config file) disables grouping: no -group flag at all, so
+# every notification stacks instead of replacing.
+test_group_empty_disables() {
+  CURRENT_TEST="group_empty_disables"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'ACTIVATE_ON_CLICK=0' 'GROUP=""'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_not_contains "$(cat "$T/bin/notifier-args")" "-group" "GROUP=\"\" emits no -group flag"
+  else
+    fail "notifier must fire on a triggering event"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -951,7 +1030,10 @@ for t in \
   test_dashed_status_falls_back_to_default \
   test_dashed_status_uses_sanitized_template \
   test_state_sweep_removes_old_state_files \
-  test_state_sweep_not_repeated_same_day; do
+  test_state_sweep_not_repeated_same_day \
+  test_group_default_is_pane \
+  test_group_template_expands \
+  test_group_empty_disables; do
   PRE_FAIL="$FAIL"
   "$t"
 done
