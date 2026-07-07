@@ -100,11 +100,17 @@ delivery = "terminal"   # was "system"; "terminal" shows an in-app toast instead
 
 ## Configuration
 
-All settings are optional. Resolution order (later wins):
+All settings are optional. Every key is overridable at each layer; resolution
+order (later wins):
 
 1. built-in defaults
-2. `$HERDR_PLUGIN_CONFIG_DIR/config.env` (herdr-managed, per machine)
-3. **`$HERDR_TN_CONFIG`** — a file you point at, ideal for dotfiles
+2. environment variable (exported before `notify.sh` runs)
+3. `$HERDR_PLUGIN_CONFIG_DIR/config.env` (herdr-managed, per machine)
+4. **`$HERDR_TN_CONFIG`** — a file you point at, ideal for dotfiles
+
+An env var exported to the empty string (e.g. `export NOTIFIER=`) counts as
+unset and keeps the built-in default; set the key in a config file to force an
+empty value.
 
 Copy [`config/config.example.env`](config/config.example.env) into your dotfiles
 and point at it from your shell profile:

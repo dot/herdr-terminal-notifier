@@ -24,7 +24,7 @@ log() { printf '[terminal-notifier] %s\n' "$*" >&2; }
 # decision taken, so a silent drop is traceable after the fact. dbg() appends;
 # the raw-JSON block below truncates it first.
 DEBUG_FILE="$STATE_DIR/last-event.json"
-dbg() { [ "${DEBUG:-0}" = "1" ] && printf '%s\n' "$*" >>"$DEBUG_FILE"; return 0; }
+dbg() { [ "$DEBUG" = "1" ] && printf '%s\n' "$*" >>"$DEBUG_FILE"; return 0; }
 
 # drop [--loud] <reason...>: record the decision in the debug dump and exit 0.
 # The reason is written to stderr only under DEBUG=1 by default, because the
@@ -33,7 +33,7 @@ dbg() { [ "${DEBUG:-0}" = "1" ] && printf '%s\n' "$*" >>"$DEBUG_FILE"; return 0;
 drop() {
   local loud=0
   [ "${1:-}" = "--loud" ] && { loud=1; shift; }
-  { [ "$loud" = 1 ] || [ "${DEBUG:-0}" = "1" ]; } && log "drop $*"
+  { [ "$loud" = 1 ] || [ "$DEBUG" = "1" ]; } && log "drop $*"
   dbg "decision=drop $*"
   exit 0
 }
@@ -45,12 +45,13 @@ command -v jq >/dev/null 2>&1 \
   || { log "fatal: jq not found on PATH; cannot parse herdr events (install jq)"; exit 1; }
 
 # --- 0. resolve the notifier binary -----------------------------------------
-# Prefer the bundled HerdrNotify.app (custom herdr icon + own bundle id), then
-# an explicit override, then a system terminal-notifier. The bundled app is
-# what makes the notification's LEFT icon the herdr logo instead of a terminal.
+# An explicit NOTIFIER override wins (set via env var or a config file); with no
+# override, prefer the bundled HerdrNotify.app (custom herdr icon + own bundle
+# id), then a system terminal-notifier. The bundled app is what makes the
+# notification's LEFT icon the herdr logo instead of a terminal.
 BUNDLED_APP="$ROOT/assets/HerdrNotify.app"
 BUNDLED_BIN="$BUNDLED_APP/Contents/MacOS/terminal-notifier"
-if [ -n "${NOTIFIER:-}" ] && [ -x "$NOTIFIER" ]; then
+if [ -n "$NOTIFIER" ] && [ -x "$NOTIFIER" ]; then
   NOTIFIER_BIN="$NOTIFIER"
 elif [ -x "$BUNDLED_BIN" ]; then
   NOTIFIER_BIN="$BUNDLED_BIN"
@@ -79,7 +80,10 @@ elif [ -x "$BUNDLED_BIN" ]; then
   sentinel="$STATE_DIR/.notifier-registered"
   # LSREGISTER is overridable so tests can inject a stub.
   lsregister="${LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
-  register_ttl="${REGISTER_TTL_SECONDS:-21600}" # 6h; bounds how long a stale reg can linger
+  # config.sh always sets this (default 6h); the :- guard only defends the
+  # arithmetic below against an explicit EMPTY override in a config file (which
+  # is sourced after the defaults and which set -u does not catch).
+  register_ttl="${REGISTER_TTL_SECONDS:-21600}" # bounds how long a stale reg can linger
   needs_register=0
   if [ ! -f "$sentinel" ] || [ "$BUNDLED_BIN" -nt "$sentinel" ]; then
     needs_register=1
@@ -97,7 +101,7 @@ elif [ -x "$BUNDLED_BIN" ]; then
     fi
     if ! "$lsregister" -f "$BUNDLED_APP" >/dev/null 2>&1; then
       # A failed registration would otherwise hide for a full TTL.
-      [ "${DEBUG:-0}" != "1" ] || log "lsregister failed for HerdrNotify.app; will retry within REGISTER_TTL_SECONDS (${register_ttl}s)"
+      [ "$DEBUG" != "1" ] || log "lsregister failed for HerdrNotify.app; will retry within REGISTER_TTL_SECONDS (${register_ttl}s)"
     fi
     : >"$sentinel"
   fi
@@ -115,7 +119,7 @@ CONTEXT_JSON="${HERDR_PLUGIN_CONTEXT_JSON:-}"; [ -n "$CONTEXT_JSON" ] || CONTEXT
 # Raw inputs first (truncating the file); resolved variables and the final
 # decision are appended by dbg()/drop() as we go, so the dump reflects both what
 # came in and which gate acted on it.
-if [ "${DEBUG:-0}" = "1" ]; then
+if [ "$DEBUG" = "1" ]; then
   {
     printf 'event=%s\n' "${HERDR_PLUGIN_EVENT:-}"
     printf 'EVENT_JSON=%s\n' "$EVENT_JSON"
@@ -223,14 +227,14 @@ dbg "cwd=$cwd"
 # stays focused inside herdr, so the blocked/done alert got dropped while you
 # were away. Frontmost detection FAILS OPEN: if lsappinfo is missing/unparsable
 # or TERMINAL_APP_IDS is empty, `front` is empty, no id matches, and we notify.
-if [ "${SUPPRESS_FOCUSED:-0}" = "1" ] && [ -n "$workspace_id" ]; then
+if [ "$SUPPRESS_FOCUSED" = "1" ] && [ -n "$workspace_id" ]; then
   if [ "$(focused_workspace_id)" = "$workspace_id" ]; then
     front="$(frontmost_bundle_id)"
-    if [ -n "$front" ] && [ -n "${TERMINAL_APP_IDS:-}" ] \
+    if [ -n "$front" ] && [ -n "$TERMINAL_APP_IDS" ] \
        && case " $TERMINAL_APP_IDS " in *" $front "*) true ;; *) false ;; esac; then
       drop "reason=focused ws=$workspace_id frontmost=$front"
     fi
-    dbg "focus-suppress skipped: ws=$workspace_id focused but terminal not frontmost (front=${front:-<none>} terminals=[${TERMINAL_APP_IDS:-}])"
+    dbg "focus-suppress skipped: ws=$workspace_id focused but terminal not frontmost (front=${front:-<none>} terminals=[$TERMINAL_APP_IDS])"
   fi
 fi
 
@@ -240,6 +244,9 @@ if [ -n "$pane_id" ]; then
   now="$(date +%s)"
   if [ -f "$stamp_file" ]; then
     read -r last_ts last_status <"$stamp_file" || true
+    # :- guard: config.sh always sets DEBOUNCE_SECONDS, but an explicit empty
+    # override in a config file would otherwise break this integer comparison
+    # (0 = no debounce is the safe fallback).
     if [ "$last_status" = "$new_status" ] && [ $((now - ${last_ts:-0})) -lt "${DEBOUNCE_SECONDS:-0}" ]; then
       drop "reason=debounce pane=$pane_id status=$new_status within ${DEBOUNCE_SECONDS:-0}s"
     fi
@@ -281,14 +288,14 @@ args=(-title "$title" -message "$body")
 if [ -n "$icon" ]; then
   case "$icon" in /*) : ;; *) icon="$ROOT/$icon" ;; esac
   if [ -f "$icon" ]; then
-    case "${ICON_MODE:-contentImage}" in
+    case "$ICON_MODE" in
       appIcon) args+=(-appIcon "$icon") ;;
       *)       args+=(-contentImage "$icon") ;;
     esac
   fi
 fi
 
-if [ "${ACTIVATE_ON_CLICK:-0}" = "1" ] && [ -n "$pane_id" ]; then
+if [ "$ACTIVATE_ON_CLICK" = "1" ] && [ -n "$pane_id" ]; then
   bin="$(command -v "$HERDR_BIN" || printf '%s' "$HERDR_BIN")"
   click="${CLICK_COMMAND//\{pane\}/$pane_id}"
   click="${click//\{workspace\}/$workspace_id}"
