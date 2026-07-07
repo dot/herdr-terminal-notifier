@@ -20,6 +20,35 @@ mkdir -p "$STATE_DIR"
 
 log() { printf '[terminal-notifier] %s\n' "$*" >&2; }
 
+# --- housekeeping: bound STATE_DIR growth ------------------------------------
+# Each event writes a laststatus-<pane> and debounce-<pane> file, and pane ids are
+# ephemeral, so under a persistent HERDR_PLUGIN_STATE_DIR these accumulate forever
+# (the TMPDIR fallback is reaped by the OS, a real state dir is not). Sweep files
+# older than STATE_SWEEP_DAYS, but only ONCE A DAY: a dedicated sentinel gates the
+# `find` on its own TTL, so the per-event cost is a single stat and the `find`
+# runs at most daily — a bounded cadence, never per-event. The find matches ONLY
+# the two state-file globs, so it can never remove the sentinels it depends on
+# (.state-swept, .notifier-registered), the debug dump, or any other file. It is
+# strictly best-effort: any failure here must never abort the notification.
+sweep_sentinel="$STATE_DIR/.state-swept"
+# config.sh always sets STATE_SWEEP_DAYS (default 7); the guard only defends the
+# find below against an explicit empty/non-numeric override in a config file.
+sweep_days="${STATE_SWEEP_DAYS:-7}"
+case "$sweep_days" in ''|*[!0-9]*) sweep_days=7 ;; esac
+sweep_needed=0
+if [ ! -f "$sweep_sentinel" ]; then
+  sweep_needed=1
+else
+  sweep_age=$(( $(date +%s) - $(stat -f %m "$sweep_sentinel" 2>/dev/null || echo 0) ))
+  [ "$sweep_age" -ge 86400 ] && sweep_needed=1
+fi
+if [ "$sweep_needed" = 1 ]; then
+  # BSD/macOS find: -mtime +N matches files older than N*24h; -delete removes them.
+  find "$STATE_DIR" -type f \( -name 'laststatus-*' -o -name 'debounce-*' \) \
+    -mtime "+$sweep_days" -delete 2>/dev/null || true
+  : >"$sweep_sentinel"
+fi
+
 # Diagnostics: a single dump file (DEBUG=1) captures every gate's inputs and the
 # decision taken, so a silent drop is traceable after the fact. dbg() appends;
 # the raw-JSON block below truncates it first.

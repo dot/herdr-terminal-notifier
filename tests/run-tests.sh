@@ -101,7 +101,7 @@ make_config() {
 make_min_path() {
   local dir="$1" tool src
   mkdir -p "$dir"
-  for tool in bash sh mkdir dirname basename pwd cat tr date stat sed env printf expr rm chmod; do
+  for tool in bash sh mkdir dirname basename pwd cat tr date stat sed env printf expr rm chmod find; do
     src="$(command -v "$tool" 2>/dev/null || true)"
     [ -n "$src" ] && ln -sf "$src" "$dir/$tool"
   done
@@ -861,6 +861,65 @@ test_dashed_status_uses_sanitized_template() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# Per-pane state files (laststatus-<pane>, debounce-<pane>) accumulate under a
+# persistent HERDR_PLUGIN_STATE_DIR because pane ids are ephemeral. A daily sweep
+# must remove ONLY those two globs when older than STATE_SWEEP_DAYS, leaving fresh
+# state files, the sweep sentinel, and any unrelated file untouched. (#11)
+test_state_sweep_removes_old_state_files() {
+  CURRENT_TEST="state_sweep_removes_old_state_files"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' \
+    'SUPPRESS_FOCUSED=0' 'ACTIVATE_ON_CLICK=0'
+  local old; old="$(date -v-10d +%Y%m%d%H%M)"
+  # Old per-pane state files: must be swept.
+  : >"$T/state/laststatus-oldpane"; touch -t "$old" "$T/state/laststatus-oldpane"
+  : >"$T/state/debounce-oldpane";   touch -t "$old" "$T/state/debounce-oldpane"
+  # Fresh per-pane state files: must survive.
+  : >"$T/state/laststatus-freshpane"
+  : >"$T/state/debounce-freshpane"
+  # Unrelated file, even if old, must never be touched (find matches only the
+  # two state globs, never the sentinels/debug dump/anything else).
+  : >"$T/state/keep-me"; touch -t "$old" "$T/state/keep-me"
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 after sweep"
+  [ ! -e "$T/state/laststatus-oldpane" ] || fail "old laststatus must be swept"
+  [ ! -e "$T/state/debounce-oldpane" ]   || fail "old debounce must be swept"
+  [ -e "$T/state/laststatus-freshpane" ] || fail "fresh laststatus must survive"
+  [ -e "$T/state/debounce-freshpane" ]   || fail "fresh debounce must survive"
+  [ -e "$T/state/keep-me" ]              || fail "unrelated file must survive the sweep"
+  [ -e "$T/state/.state-swept" ]         || fail "sweep sentinel must be written"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# The sweep is gated by a daily sentinel, so a second event on the same day must
+# NOT re-run find: an old file seeded after the first sweep survives. (#11)
+test_state_sweep_not_repeated_same_day() {
+  CURRENT_TEST="state_sweep_not_repeated_same_day"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' \
+    'SUPPRESS_FOCUSED=0' 'ACTIVATE_ON_CLICK=0'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify   # first event: no sentinel yet -> sweeps and writes .state-swept
+  [ -e "$T/state/.state-swept" ] || fail "first event must create the sweep sentinel"
+  # Seed an OLD state file AFTER the sentinel exists; a same-day second event
+  # must leave it alone (the daily TTL has not elapsed).
+  local old; old="$(date -v-10d +%Y%m%d%H%M)"
+  : >"$T/state/laststatus-stale"; touch -t "$old" "$T/state/laststatus-stale"
+  run_notify   # second event same day: sentinel fresh -> find must not run
+  assert_eq "$REPLY_RC" 0 "exit 0 on second event"
+  [ -e "$T/state/laststatus-stale" ] || fail "sweep must not re-run within the daily TTL"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -890,7 +949,9 @@ for t in \
   test_click_execute_spaced_bin_path \
   test_corrupt_debounce_stamp_still_notifies \
   test_dashed_status_falls_back_to_default \
-  test_dashed_status_uses_sanitized_template; do
+  test_dashed_status_uses_sanitized_template \
+  test_state_sweep_removes_old_state_files \
+  test_state_sweep_not_repeated_same_day; do
   PRE_FAIL="$FAIL"
   "$t"
 done

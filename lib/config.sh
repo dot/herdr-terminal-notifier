@@ -51,6 +51,12 @@ _tn_default TERMINAL_APP_IDS "com.mitchellh.ghostty com.apple.Terminal com.googl
 # Ignore a repeated (pane,status) within this many seconds (flap guard).
 _tn_default DEBOUNCE_SECONDS "2"
 
+# Housekeeping: delete per-pane state files (laststatus-*/debounce-*) older than
+# this many days. Pane ids are ephemeral, so under a persistent
+# HERDR_PLUGIN_STATE_DIR these would otherwise accumulate forever. The sweep runs
+# at most once a day (gated by a .state-swept sentinel), never per event.
+_tn_default STATE_SWEEP_DAYS "7"
+
 # Clicking the notification focuses the agent that changed.
 _tn_default ACTIVATE_ON_CLICK "1"
 # How to focus on click. {pane}/{workspace}/{agent} are substituted.
