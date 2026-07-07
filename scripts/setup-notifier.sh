@@ -14,31 +14,36 @@
 # -> herdr) cannot be scripted; the first notification will request it.
 set -euo pipefail
 
-# ensure_adhoc_signed APP
-# Ad-hoc re-signs APP only if its current signature is absent or invalid.
-# Returns 0 if it re-signed, 1 if the existing signature was already valid
-# (no-op). Factored out so tests can exercise the decision in isolation.
-ensure_adhoc_signed() {
-  local app="$1"
-  if codesign --verify --deep "$app" >/dev/null 2>&1; then
-    return 1
-  fi
-  codesign --force --deep -s - "$app" >/dev/null 2>&1 || true
-  return 0
+# signature_valid APP — true if APP carries a valid (deep) code signature.
+signature_valid() {
+  codesign --verify --deep "$1" >/dev/null 2>&1
+}
+
+# adhoc_sign APP — ad-hoc re-sign APP; propagates codesign's exit status so a
+# failed signing is never mistaken for a successful one.
+adhoc_sign() {
+  codesign --force --deep -s - "$1" >/dev/null 2>&1
 }
 
 main() {
   local root app lsregister
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   app="$root/assets/HerdrNotify.app"
-  lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  # Overridable so tests can inject a stub.
+  lsregister="${LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 
   [ -d "$app" ] || { echo "bundled notifier missing: $app" >&2; exit 0; }
 
-  if ensure_adhoc_signed "$app"; then
-    echo "re-signed notifier (ad-hoc): $app"
-    echo "  note: a re-sign can reset the Notifications grant — if desktop toasts" >&2
-    echo "  stop, re-approve HerdrNotify in System Settings -> Notifications." >&2
+  if ! signature_valid "$app"; then
+    if adhoc_sign "$app"; then
+      echo "re-signed notifier (ad-hoc): $app"
+      echo "  note: a re-sign can reset the Notifications grant — if desktop toasts" >&2
+      echo "  stop, re-approve \"herdr\" in System Settings -> Notifications." >&2
+    else
+      # Registration is still attempted; the plugin self-heals on a TTL at
+      # notify time, so this build step stays best-effort (exit 0).
+      echo "codesign FAILED for $app — signature is still invalid" >&2
+    fi
   fi
   [ -x "$lsregister" ] && "$lsregister" -f "$app" >/dev/null 2>&1 || true
   echo "registered notifier: $app"

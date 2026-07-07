@@ -56,7 +56,7 @@ re-check this setting and that Focus / Do Not Disturb is off.
 > **only when the existing signature is invalid** (setup/install and the handler
 > both verify first). If you deliberately re-sign — e.g. after swapping the icon
 > (`scripts/setup-notifier.sh` with an invalid/absent signature) — and toasts stop,
-> re-approve **HerdrNotify** under **System Settings → Notifications**.
+> re-approve **herdr** under **System Settings → Notifications**.
 
 ## Install
 
@@ -73,16 +73,20 @@ scripts/install.sh            # install from GitHub
 scripts/install.sh --link     # link this checkout + register the notifier app
 ```
 
-Install registers `HerdrNotify.app` with Launch Services (re-sign + `lsregister`).
-On `herdr plugin install` this happens via the manifest `[[build]]` step; on
-`link` the handler also self-registers on first event.
+Install registers `HerdrNotify.app` with Launch Services (`lsregister`, plus an
+ad-hoc re-sign **only if the existing signature is invalid** — see the grant note
+above). On `herdr plugin install` this happens via the manifest `[[build]]` step;
+on `link` the handler also self-registers on first event.
 
 An ad-hoc-signed helper can quietly lose that registration over time (reboots,
 OS updates), and macOS then falls back to showing the **parent terminal's** icon
 instead of the herdr logo. To recover without manual intervention, the handler
-re-registers the bundle whenever its registration is older than
+re-registers the bundle (verifying — and only if invalid, repairing — the
+signature) whenever its registration is older than
 `REGISTER_TTL_SECONDS` (default 6h) — so the icon self-heals within that window
 the next time a notification fires. No cron, daemon, or `chezmoi apply` needed.
+A failed repair is logged (look for `codesign FAILED` on stderr) and retried on
+the same TTL cadence.
 
 ### Avoid double notifications
 
@@ -139,7 +143,8 @@ The icon source lives in `assets/` (`herdr-logo.svg` → rounded `herdr-rounded.
 ```sh
 # render any 1024×1024 PNG, then:
 sips -s format icns your.png --out assets/HerdrNotify.app/Contents/Resources/Terminal.icns
-bash scripts/setup-notifier.sh        # re-sign + re-register
+bash scripts/setup-notifier.sh   # re-register; re-signs because the icon swap
+                                 # invalidated the signature (may reset the grant)
 ```
 
 ## Cross-machine / declarative management (nix · chezmoi)

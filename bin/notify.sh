@@ -36,33 +36,43 @@ elif [ -x "$BUNDLED_BIN" ]; then
   # over time (reboots, OS updates). When that happens the icon reverts to the
   # terminal's. A plain "register once per app revision" sentinel never recovers
   # from that — once stale, it stays stale — so we self-heal on a TTL:
-  #   * no sentinel / bundle newer than sentinel -> new build: verify the
-  #     signature and re-sign (ad-hoc) ONLY if it is invalid, then register
-  #   * sentinel older than REGISTER_TTL_SECONDS  -> register only (cheap refresh)
-  # Re-signing is verify-gated because an ad-hoc signature gets a fresh CDHash
-  # each time, which changes the identity macOS keys the notification (TCC) grant
-  # to — a needless re-sign can drop the grant. lsregister-only on the periodic
-  # path likewise avoids re-signing.
+  #   * no sentinel / bundle newer than sentinel -> register (new build)
+  #   * sentinel older than REGISTER_TTL_SECONDS  -> register (periodic refresh)
+  # Every register pass also verifies the code signature and ad-hoc re-signs
+  # ONLY if it is invalid. The verify gate matters because an ad-hoc signature
+  # gets a fresh CDHash each time, which changes the identity macOS keys the
+  # notification (TCC) grant to — a needless re-sign can drop the grant.
+  # A FAILED re-sign is logged distinctly (never claimed as a re-sign) and, since
+  # the sentinel is refreshed regardless, retried on the next TTL expiry — a
+  # bounded cadence, not per-event and not never. Delivery stays best-effort:
+  # signing/registration problems never abort the notification itself.
   # Termination: the sentinel is refreshed (: >sentinel) at the end of the branch
-  # regardless of whether we signed, so its mtime lands newer than the bundle's;
-  # the next event therefore takes the cheap TTL path, never re-entering the
-  # "bundle newer" branch on every event.
+  # regardless of the verify/sign outcome, so its mtime lands newer than the
+  # bundle's; the next event therefore takes the cheap TTL path, never
+  # re-entering the "bundle newer" branch on every event.
   sentinel="$STATE_DIR/.notifier-registered"
-  lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  # LSREGISTER is overridable so tests can inject a stub.
+  lsregister="${LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
   register_ttl="${REGISTER_TTL_SECONDS:-21600}" # 6h; bounds how long a stale reg can linger
-  needs_register=0 needs_codesign=0
+  needs_register=0
   if [ ! -f "$sentinel" ] || [ "$BUNDLED_BIN" -nt "$sentinel" ]; then
-    needs_register=1 needs_codesign=1
+    needs_register=1
   else
     sentinel_age=$(( $(date +%s) - $(stat -f %m "$sentinel" 2>/dev/null || echo 0) ))
     [ "$sentinel_age" -ge "$register_ttl" ] && needs_register=1
   fi
   if [ "$needs_register" = 1 ]; then
-    if [ "$needs_codesign" = 1 ] && ! codesign --verify --deep "$BUNDLED_APP" >/dev/null 2>&1; then
-      codesign --force --deep -s - "$BUNDLED_APP" >/dev/null 2>&1 || true
-      log "re-signed HerdrNotify.app (ad-hoc); if desktop notifications stop, re-approve HerdrNotify in System Settings -> Notifications"
+    if ! codesign --verify --deep "$BUNDLED_APP" >/dev/null 2>&1; then
+      if codesign --force --deep -s - "$BUNDLED_APP" >/dev/null 2>&1; then
+        log "re-signed HerdrNotify.app (ad-hoc); if desktop notifications stop, re-approve \"herdr\" in System Settings -> Notifications"
+      else
+        log "codesign FAILED for HerdrNotify.app; signature still invalid, will retry within REGISTER_TTL_SECONDS (${register_ttl}s)"
+      fi
     fi
-    "$lsregister" -f "$BUNDLED_APP" >/dev/null 2>&1 || true
+    if ! "$lsregister" -f "$BUNDLED_APP" >/dev/null 2>&1; then
+      # A failed registration would otherwise hide for a full TTL.
+      [ "${DEBUG:-0}" != "1" ] || log "lsregister failed for HerdrNotify.app; will retry within REGISTER_TTL_SECONDS (${register_ttl}s)"
+    fi
     : >"$sentinel"
   fi
 elif command -v terminal-notifier >/dev/null 2>&1; then
