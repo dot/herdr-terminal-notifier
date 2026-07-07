@@ -7,6 +7,7 @@
 #   (a) already-installed + no flag  -> NO `plugin install` call (idempotent no-op)
 #   (b) already-installed + --force  -> `plugin install` IS called (update path)
 #   (c) not installed                -> `plugin install` IS called
+#   (d) id only inside ANOTHER plugin's description -> `plugin install` IS called
 #
 # A fake `herdr` (pointed at via HERDR_BIN_PATH) records its argv and answers
 # `plugin list` from a fixture, so we assert on the observable side effect: did
@@ -22,18 +23,23 @@ FAILED_NAMES=()
 fail() { FAIL=$((FAIL + 1)); FAILED_NAMES+=("$CURRENT: $1"); printf 'FAIL %s: %s\n' "$CURRENT" "$1"; }
 pass() { PASS=$((PASS + 1)); printf 'ok   %s\n' "$CURRENT"; }
 
-# make_herdr <dir> <installed|absent>
+# make_herdr <dir> <installed|absent|lookalike>
 # Writes a fake herdr that logs argv to <dir>/herdr-calls and answers
-# `plugin list` either with the real installed-line format or an empty list.
+# `plugin list` with the real installed-line format, an empty list, or a list
+# where ANOTHER plugin's description merely mentions our id (lookalike).
 make_herdr() {
   local dir="$1" state="$2"
   local f="$dir/herdr" listing
-  if [ "$state" = installed ]; then
-    listing="1 plugin installed:
-- $PLUGIN_ID (terminal-notifier notifications) enabled [github:dot/herdr-terminal-notifier@abc1234]"
-  else
-    listing="0 plugins installed."
-  fi
+  case "$state" in
+    installed)
+      listing="1 plugin installed:
+- $PLUGIN_ID (terminal-notifier notifications) enabled [github:dot/herdr-terminal-notifier@abc1234]" ;;
+    lookalike)
+      listing="1 plugin installed:
+- other.plugin (mentions - $PLUGIN_ID in docs) enabled [github:x/y@abc1234]" ;;
+    *)
+      listing="0 plugins installed." ;;
+  esac
   {
     printf '#!/usr/bin/env bash\n'
     # shellcheck disable=SC2016  # writing literal shell into the stub, not expanding here
@@ -82,6 +88,15 @@ run_install absent
 if [ "$RC" -ne 0 ]; then fail "expected exit 0, got $RC: $OUT"
 elif installed_install_call; then pass
 else fail "must call 'plugin install' when not installed"; fi
+
+# (d) regression #12 follow-up: another plugin's DESCRIPTION contains
+# "- <our id> " but our plugin is NOT installed -> the guard must not
+# substring-match it; install must still be called.
+CURRENT="lookalike_description_still_installs"
+run_install lookalike
+if [ "$RC" -ne 0 ]; then fail "expected exit 0, got $RC: $OUT"
+elif installed_install_call; then pass
+else fail "id inside another plugin's description must not count as installed"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then printf 'Failures:\n'; printf '  - %s\n' "${FAILED_NAMES[@]}"; exit 1; fi
