@@ -124,10 +124,12 @@ if [ "${DEBUG:-0}" = "1" ]; then
   log "debug dump written to $DEBUG_FILE"
 fi
 
-# --- 2. pull the essentials (event payload lives under .data; context is flat)
+# --- 2. resolve pane_id + new_status from the EVENT (before any CLI call) -----
 # Event shape:  {"event":...,"data":{"pane_id","workspace_id","agent_status","agent"}}
-# Both the event and the (richer) context are tried before falling back to a
-# live `herdr pane get`, with `// empty` chains so a missing key is just blank.
+# Only the two fields the trigger gate needs are resolved here. Everything else
+# (including every live `herdr` socket round-trip) is deferred to section 4,
+# AFTER the gate, so a high-frequency non-triggering event (e.g. `working`) pays
+# for ZERO herdr CLI calls and never re-enters the herdr CLI from this handler.
 ev()  { printf '%s' "$EVENT_JSON"   | jq -r "$1 // empty" 2>/dev/null || true; }
 ctx() { printf '%s' "$CONTEXT_JSON" | jq -r "$1 // empty" 2>/dev/null || true; }
 
@@ -146,16 +148,55 @@ if [ -z "$pane_id" ]; then
   drop --loud "reason=nopane (event carried no .data.pane_id)"
 fi
 new_status="$(ev '.data.agent_status')"
+# Anomalous path only: a well-formed pane.agent_status_changed event carries the
+# status in .data.agent_status (no CLI). If it is absent (schema-thin event) we
+# fall back to a single live `herdr pane get` so the gate has a value to judge.
+# This is the ONE herdr CLI call that can happen before the gate, and only on
+# that anomalous event — the normal working-churn path stays CLI-free here.
+[ -n "$new_status" ] || new_status="$(pane_field "$pane_id" '.agent_status')"
+
+# Pre-gate resolved view: identity + status, so a drop below is traceable to the
+# concrete values even before the (deferred) enrichment fills in cosmetic fields.
+dbg "pane_id=$pane_id"
+dbg "new_status=$new_status"
+
+if [ -z "$new_status" ]; then
+  # Anomalous: this handler is bound to pane.agent_status_changed, so an event
+  # with no resolvable status usually means a schema/parse problem worth seeing.
+  drop --loud "reason=nostatus (event/herdr carried no agent_status)"
+fi
+
+# Per-pane previous status: the event carries only the new status, so we track
+# the last-seen value ourselves to give {old_status} meaning. Updated on every
+# event (before the trigger filter) so transitions are recorded faithfully.
+pane_key="$(printf '%s' "$pane_id" | tr -c 'A-Za-z0-9._-' '_')"
+old_status=""
+laststatus_file="$STATE_DIR/laststatus-$pane_key"
+[ -f "$laststatus_file" ] && old_status="$(cat "$laststatus_file" 2>/dev/null || true)"
+printf '%s' "$new_status" >"$laststatus_file"
+dbg "old_status=$old_status"
+
+# --- 3. should this transition notify? ---------------------------------------
+# Placed BEFORE live enrichment so a non-triggering status short-circuits with
+# zero herdr socket round-trips.
+case " $TRIGGER_STATUSES " in
+  *" $new_status "*) : ;;
+  *) drop "reason=trigger status=$new_status not in [$TRIGGER_STATUSES]" ;;
+esac
+
+# --- 4. enrich from live herdr state (only reached by triggering events) ------
+# Every field below is either read cheaply from the event/context JSON or filled
+# from a live `herdr` call; running it after the trigger gate keeps that cost off
+# non-triggering churn. SUPPRESS_FOCUSED (section 5) needs workspace_id, so this
+# must precede it. session id is only available live; the rest are fallbacks if
+# the event/context was thin.
 agent="$(ev '.data.agent')"
 workspace_id="$(ev '.data.workspace_id')"
 workspace="$(ctx '.workspace_label')"
 tab_id="$(ctx '.tab_id')"
 cwd="$(ctx '.workspace_cwd')";            [ -n "$cwd" ]          || cwd="$(ctx '.focused_pane_cwd')"
 
-# --- 3. enrich from live herdr state for anything still missing --------------
-# session id is only available live; the rest are fallbacks if context was thin.
 session="$(pane_field "$pane_id" '.agent_session.value')"
-[ -n "$new_status" ]   || new_status="$(pane_field "$pane_id" '.agent_status')"
 [ -n "$agent" ]        || agent="$(pane_field "$pane_id" '.agent')"
 [ -n "$workspace_id" ] || workspace_id="$(pane_field "$pane_id" '.workspace_id')"
 [ -n "$tab_id" ]       || tab_id="$(pane_field "$pane_id" '.tab_id')"
@@ -166,38 +207,13 @@ session="$(pane_field "$pane_id" '.agent_session.value')"
 [ -n "$agent" ]     || agent="agent"
 worktree="$([ -n "$cwd" ] && basename "$cwd" || printf '%s' "$workspace")"
 
-# Record the resolved view so a drop below can be traced to concrete values.
-dbg "pane_id=$pane_id"
-dbg "new_status=$new_status"
+# Enriched (post-gate) view of the cosmetic/identity fields, so a focused/debounce
+# drop below can still be traced to concrete values.
 dbg "agent=$agent"
 dbg "workspace_id=$workspace_id"
 dbg "workspace=$workspace"
 dbg "tab_id=$tab_id"
 dbg "cwd=$cwd"
-
-if [ -z "$new_status" ]; then
-  # Anomalous: this handler is bound to pane.agent_status_changed, so an event
-  # with no resolvable status usually means a schema/parse problem worth seeing.
-  drop --loud "reason=nostatus (event/context/herdr carried no agent_status)"
-fi
-
-# Per-pane previous status: the event carries only the new status, so we track
-# the last-seen value ourselves to give {old_status} meaning. Updated on every
-# event (before the trigger filter) so transitions are recorded faithfully.
-old_status=""
-if [ -n "$pane_id" ]; then
-  pane_key="$(printf '%s' "$pane_id" | tr -c 'A-Za-z0-9._-' '_')"
-  laststatus_file="$STATE_DIR/laststatus-$pane_key"
-  [ -f "$laststatus_file" ] && old_status="$(cat "$laststatus_file" 2>/dev/null || true)"
-  printf '%s' "$new_status" >"$laststatus_file"
-fi
-dbg "old_status=$old_status"
-
-# --- 4. should this transition notify? ---------------------------------------
-case " $TRIGGER_STATUSES " in
-  *" $new_status "*) : ;;
-  *) drop "reason=trigger status=$new_status not in [$TRIGGER_STATUSES]" ;;
-esac
 
 # --- 5. suppress the workspace you are currently looking at ------------------
 # Two conditions must BOTH hold to suppress: the event's workspace is the one

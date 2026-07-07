@@ -507,6 +507,88 @@ test_focus_suppress_disabled_notify() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- issue #6: enrichment must run AFTER the trigger gate --------------------
+# A non-triggering event must short-circuit with ZERO herdr CLI calls; a
+# triggering event must still see live-enriched fields ({session} etc.).
+# (Appended at the END to minimize merge conflicts with parallel work.)
+
+# Non-triggering `working` event with a FULL event payload -> drop AND not a
+# single herdr socket round-trip (the enrichment block never runs pre-gate).
+test_nontrigger_zero_cli() {
+  CURRENT_TEST="nontrigger_zero_cli"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0'
+  # Full payload: pane_id + agent_status present, so new_status needs no CLI.
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"working","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  DEBUG_FLAG=1   # trigger drops are high-volume: logged only under DEBUG
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on non-trigger status"
+  assert_contains "$REPLY_ERR" "drop reason=trigger" "logs trigger drop reason"
+  # The whole point of #6: no herdr CLI call before the gate short-circuits.
+  local calls; calls="$(cat "$T/bin/herdr-calls" 2>/dev/null || true)"
+  assert_eq "$calls" "" "non-triggering event makes ZERO herdr CLI calls"
+  [ ! -f "$T/bin/notifier-args" ] || fail "notifier must not fire on non-trigger status"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# Triggering event -> live enrichment still runs AFTER the gate: {session}, only
+# resolvable from a live `herdr pane get`, must reach the notifier's argv.
+test_trigger_enriches_session() {
+  CURRENT_TEST="trigger_enriches_session"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  # session id lives only in live pane state; make pane get carry it.
+  HERDR_BIN="$(make_herdr_pane "$T/bin" '{"agent_session":{"value":"sess-XYZ"},"workspace_id":"w1","agent":"claude"}')"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'BODY_DONE="session={session}"'
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on triggering event"
+  assert_contains "$(cat "$T/bin/herdr-calls" 2>/dev/null || true)" "pane get p1" "enriches via a live pane get after the gate"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_contains "$(cat "$T/bin/notifier-args")" "sess-XYZ" "notifier body carries the live-enriched session id"
+  else
+    fail "notifier must fire on a triggering, enriched event"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# old_status must be recorded BEFORE the trigger gate: a non-triggering `working`
+# event (zero herdr CLI) still writes laststatus, so the next triggering `done`
+# event expands {old_status}->{new_status} to working->done.
+test_old_status_tracked_across_nontrigger() {
+  CURRENT_TEST="old_status_tracked_across_nontrigger"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'BODY_DONE="{old_status}->{new_status}"'
+  # 1) non-triggering working event: drops, but records laststatus and hits no CLI.
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"working","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  DEBUG_FLAG=1
+  run_notify
+  assert_eq "$(cat "$T/bin/herdr-calls" 2>/dev/null || true)" "" "working event records old_status with ZERO herdr calls"
+  [ ! -f "$T/bin/notifier-args" ] || fail "working event must not fire the notifier"
+  # 2) triggering done event: expands old_status recorded by the working event.
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  DEBUG_FLAG=0
+  run_notify
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_contains "$(cat "$T/bin/notifier-args")" "working->done" "old_status transition survives the non-triggering event"
+  else
+    fail "notifier must fire on the triggering done event"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -524,7 +606,10 @@ for t in \
   test_focus_other_app_notify \
   test_focus_lsappinfo_missing_notify \
   test_focus_lsappinfo_garbage_notify \
-  test_focus_suppress_disabled_notify; do
+  test_focus_suppress_disabled_notify \
+  test_nontrigger_zero_cli \
+  test_trigger_enriches_session \
+  test_old_status_tracked_across_nontrigger; do
   PRE_FAIL="$FAIL"
   "$t"
 done
