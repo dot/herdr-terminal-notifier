@@ -9,8 +9,9 @@
 #
 # Stubs:
 #   * terminal-notifier -> a script that records its argv (and can be told to
-#     fail with a chosen stderr message). Injected via NOTIFIER= inside a
-#     HERDR_TN_CONFIG file, because config.sh clobbers the NOTIFIER env var.
+#     fail with a chosen stderr message). Most tests inject NOTIFIER= via a
+#     HERDR_TN_CONFIG file; #5 also injects it (and other keys) via the env, now
+#     that config.sh honors env overrides instead of clobbering them.
 #   * herdr             -> a script answering pane/workspace queries, pointed
 #     at via HERDR_BIN_PATH.
 #
@@ -589,6 +590,82 @@ test_old_status_tracked_across_nontrigger() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- issue #5: every config key is env-overridable ---------------------------
+# config.sh assigns defaults as ${VAR:-default}, so an exported env var wins over
+# the built-in default, while the config files (config.env, HERDR_TN_CONFIG) are
+# sourced afterwards and still win over the env var.
+# (Appended at the END to minimize merge conflicts with parallel work.)
+
+# NOTIFIER supplied ONLY via the environment (not in any config file) must be
+# honored. This is the headline of #5: config.sh used to hardcode NOTIFIER=""
+# and clobber the env override, so the stub was never used.
+test_env_notifier_override_honored() {
+  CURRENT_TEST="env_notifier_override_honored"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  # Config file deliberately does NOT set NOTIFIER; it comes from the env below.
+  make_config "$TN_CONFIG" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' 'ACTIVATE_ON_CLICK=0'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{"workspace_label":"My WS"}'
+  run_notify "NOTIFIER=$n"
+  assert_eq "$REPLY_RC" 0 "exit 0 with env-only NOTIFIER"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_contains "$(cat "$T/bin/notifier-args")" "done" "env NOTIFIER stub is used (title reflects done)"
+  else
+    fail "env-only NOTIFIER override must be honored (stub must fire)"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# A config file must still beat an env var for the SAME key. Env sets
+# DEBOUNCE_SECONDS=0 (would let a repeat through); the config file sets 3600
+# (debounces). If the config file wins, the second repeat is debounced.
+test_config_beats_env_for_same_key() {
+  CURRENT_TEST="config_beats_env_for_same_key"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' 'DEBOUNCE_SECONDS=3600'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  DEBUG_FLAG=1   # debounce drops are high-volume: logged only under DEBUG
+  run_notify "DEBOUNCE_SECONDS=0"   # env says 0; config file says 3600 and must win
+  rm -f "$T/bin/notifier-args"
+  run_notify "DEBOUNCE_SECONDS=0"   # second repeat: debounced iff config's 3600 won
+  assert_eq "$REPLY_RC" 0 "exit 0 on debounce"
+  assert_contains "$REPLY_ERR" "drop reason=debounce" "config file DEBOUNCE_SECONDS beats the env var"
+  [ ! -f "$T/bin/notifier-args" ] || fail "config's DEBOUNCE_SECONDS=3600 must win over env's 0 (second repeat debounced)"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# An env-only override with NO config-file entry for the key must take effect and
+# override the built-in default. Env DEBOUNCE_SECONDS=0 disables debounce, whereas
+# the built-in default (2s) would drop the rapid second event: the second event
+# firing proves the env value (not the default) is in effect.
+test_env_only_override_beats_builtin_default() {
+  CURRENT_TEST="env_only_override_beats_builtin_default"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  # No DEBOUNCE_SECONDS in the config file: the env value below is the only source.
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  DEBUG_FLAG=1
+  run_notify "DEBOUNCE_SECONDS=0"   # first fires
+  [ -f "$T/bin/notifier-args" ] || fail "first event must fire"
+  rm -f "$T/bin/notifier-args"
+  run_notify "DEBOUNCE_SECONDS=0"   # second, immediate: NOT debounced because env set 0
+  assert_eq "$REPLY_RC" 0 "exit 0"
+  assert_not_contains "$REPLY_ERR" "drop reason=debounce" "env DEBOUNCE_SECONDS=0 overrides the built-in 2s default"
+  [ -f "$T/bin/notifier-args" ] || fail "second rapid event must fire when env sets DEBOUNCE_SECONDS=0"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -609,7 +686,10 @@ for t in \
   test_focus_suppress_disabled_notify \
   test_nontrigger_zero_cli \
   test_trigger_enriches_session \
-  test_old_status_tracked_across_nontrigger; do
+  test_old_status_tracked_across_nontrigger \
+  test_env_notifier_override_honored \
+  test_config_beats_env_for_same_key \
+  test_env_only_override_beats_builtin_default; do
   PRE_FAIL="$FAIL"
   "$t"
 done
