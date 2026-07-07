@@ -756,6 +756,53 @@ test_click_execute_spaced_bin_path() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- issue #9: a corrupt debounce stamp must degrade to "no debounce" ---------
+# A partially written or hand-edited stamp file can hold a non-numeric timestamp.
+# The debounce gate compares last_status to new_status first, so a corrupt stamp
+# whose status field matches reaches the arithmetic `$((now - last_ts))`; under
+# `set -euo pipefail` a non-numeric last_ts aborts the whole handler before any
+# notification (silent drop). The fix validates last_ts (falling back to 0), so a
+# corrupt stamp degrades to "no debounce" -> the notification fires.
+# (Appended at the END to minimize merge conflicts with parallel work.)
+test_corrupt_debounce_stamp_still_notifies() {
+  CURRENT_TEST="corrupt_debounce_stamp_still_notifies"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' 'DEBOUNCE_SECONDS=60'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  DEBUG_FLAG=1   # debounce drops are high-volume: logged only under DEBUG
+  # Corrupt stamp: non-numeric ts, but the status field MATCHES new_status ("done")
+  # so the gate does not short-circuit and the arithmetic is actually reached.
+  printf 'garbage done\n' >"$T/state/debounce-p1"
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 despite a corrupt debounce stamp (no set -e crash)"
+  assert_not_contains "$REPLY_ERR" "drop reason=debounce" "corrupt stamp must not be treated as an active debounce"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_contains "$(cat "$T/bin/notifier-args")" "done" "notification fires (no-debounce degradation) on a corrupt stamp"
+  else
+    fail "notifier must fire when the debounce stamp is corrupt (degrade to no debounce)"
+  fi
+  # Leading-zero ts is all-digits but fatal in bash arithmetic as octal ("08");
+  # it too must degrade, not crash. (The handler just rewrote a fresh valid stamp
+  # above, so overwrite it again with the octal-shaped corruption.)
+  printf '08 done\n' >"$T/state/debounce-p1"
+  rm -f "$T/bin/notifier-args"
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on a leading-zero (octal-shaped) stamp"
+  [ -f "$T/bin/notifier-args" ] || fail "notifier must fire on a leading-zero stamp (no octal crash)"
+  # And a genuine fresh stamp must still debounce: the run above wrote a valid
+  # numeric stamp, so an immediate repeat within the window is dropped — proving
+  # the guard did not disable debounce for well-formed stamps.
+  rm -f "$T/bin/notifier-args"
+  run_notify
+  assert_contains "$REPLY_ERR" "drop reason=debounce" "a valid fresh stamp still debounces a rapid repeat"
+  [ ! -f "$T/bin/notifier-args" ] || fail "rapid repeat after a valid stamp must be debounced"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -782,7 +829,8 @@ for t in \
   test_env_only_override_beats_builtin_default \
   test_click_execute_happy_path \
   test_click_execute_hostile_values \
-  test_click_execute_spaced_bin_path; do
+  test_click_execute_spaced_bin_path \
+  test_corrupt_debounce_stamp_still_notifies; do
   PRE_FAIL="$FAIL"
   "$t"
 done

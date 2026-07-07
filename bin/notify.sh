@@ -243,12 +243,25 @@ if [ -n "$pane_id" ]; then
   stamp_file="$STATE_DIR/debounce-$pane_key"
   now="$(date +%s)"
   if [ -f "$stamp_file" ]; then
+    # Pre-init so a read that assigns nothing (empty/short file) can't trip set -u
+    # in the comparisons below.
+    last_ts="" last_status=""
     read -r last_ts last_status <"$stamp_file" || true
-    # :- guard: config.sh always sets DEBOUNCE_SECONDS, but an explicit empty
-    # override in a config file would otherwise break this integer comparison
-    # (0 = no debounce is the safe fallback).
-    if [ "$last_status" = "$new_status" ] && [ $((now - ${last_ts:-0})) -lt "${DEBOUNCE_SECONDS:-0}" ]; then
-      drop "reason=debounce pane=$pane_id status=$new_status within ${DEBOUNCE_SECONDS:-0}s"
+    # A corrupt stamp (partial write, hand edit) can hold a non-numeric last_ts.
+    # Feeding that to $((...)) raises an arithmetic error that, under set -e,
+    # would kill the handler before any notification (a silent drop). Validate
+    # first: anything that is not all digits degrades to 0 (= "no debounce",
+    # notify fires) rather than crashing. The value is then read with an explicit
+    # 10# base so a leading-zero stamp (e.g. "08") is decimal, not a fatal octal.
+    case "$last_ts" in ''|*[!0-9]*) last_ts=0 ;; esac
+    # DEBOUNCE_SECONDS is trusted config, but an empty or non-numeric override in
+    # a config file would break the integer comparison the same way; the same
+    # guard keeps a sanitized local (0 = no debounce) as the safe fallback and is
+    # what we log below, so the reported window matches the one actually applied.
+    debounce_window="${DEBOUNCE_SECONDS:-0}"
+    case "$debounce_window" in ''|*[!0-9]*) debounce_window=0 ;; esac
+    if [ "$last_status" = "$new_status" ] && [ "$((now - 10#$last_ts))" -lt "$debounce_window" ]; then
+      drop "reason=debounce pane=$pane_id status=$new_status within ${debounce_window}s"
     fi
   fi
   printf '%s %s\n' "$now" "$new_status" >"$stamp_file"
