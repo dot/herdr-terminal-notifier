@@ -18,6 +18,30 @@ mkdir -p "$STATE_DIR"
 
 log() { printf '[terminal-notifier] %s\n' "$*" >&2; }
 
+# Diagnostics: a single dump file (DEBUG=1) captures every gate's inputs and the
+# decision taken, so a silent drop is traceable after the fact. dbg() appends;
+# the raw-JSON block below truncates it first.
+DEBUG_FILE="$STATE_DIR/last-event.json"
+dbg() { [ "${DEBUG:-0}" = "1" ] && printf '%s\n' "$*" >>"$DEBUG_FILE"; return 0; }
+
+# drop [--loud] <reason...>: record the decision in the debug dump and exit 0.
+# The reason is written to stderr only under DEBUG=1 by default, because the
+# trigger/focused/debounce gates fire on routine status churn and would spam
+# herdr's log. Pass --loud for rare/anomalous drops that always warrant a line.
+drop() {
+  local loud=0
+  [ "${1:-}" = "--loud" ] && { loud=1; shift; }
+  { [ "$loud" = 1 ] || [ "${DEBUG:-0}" = "1" ]; } && log "drop $*"
+  dbg "decision=drop $*"
+  exit 0
+}
+
+# jq is the hard dependency for every field we read out of the event/context and
+# out of live herdr state. Without it the helpers below would degrade to empty
+# strings and the event would drop for a bogus "no status" reason. Fail loudly.
+command -v jq >/dev/null 2>&1 \
+  || { log "fatal: jq not found on PATH; cannot parse herdr events (install jq)"; exit 1; }
+
 # --- 0. resolve the notifier binary -----------------------------------------
 # Prefer the bundled HerdrNotify.app (custom herdr icon + own bundle id), then
 # an explicit override, then a system terminal-notifier. The bundled app is
@@ -66,13 +90,16 @@ EVENT_JSON="${HERDR_PLUGIN_EVENT_JSON:-}"; [ -n "$EVENT_JSON" ] || EVENT_JSON='{
 CONTEXT_JSON="${HERDR_PLUGIN_CONTEXT_JSON:-}"; [ -n "$CONTEXT_JSON" ] || CONTEXT_JSON='{}'
 
 # --- 1. optional debug dump (used to confirm field names on a new build) -----
+# Raw inputs first (truncating the file); resolved variables and the final
+# decision are appended by dbg()/drop() as we go, so the dump reflects both what
+# came in and which gate acted on it.
 if [ "${DEBUG:-0}" = "1" ]; then
   {
     printf 'event=%s\n' "${HERDR_PLUGIN_EVENT:-}"
     printf 'EVENT_JSON=%s\n' "$EVENT_JSON"
     printf 'CONTEXT_JSON=%s\n' "$CONTEXT_JSON"
-  } >"$STATE_DIR/last-event.json"
-  log "debug dump written to $STATE_DIR/last-event.json"
+  } >"$DEBUG_FILE"
+  log "debug dump written to $DEBUG_FILE"
 fi
 
 # --- 2. pull the essentials (event payload lives under .data; context is flat)
@@ -104,9 +131,19 @@ session="$(pane_field "$pane_id" '.agent_session.value')"
 [ -n "$agent" ]     || agent="agent"
 worktree="$([ -n "$cwd" ] && basename "$cwd" || printf '%s' "$workspace")"
 
+# Record the resolved view so a drop below can be traced to concrete values.
+dbg "pane_id=$pane_id"
+dbg "new_status=$new_status"
+dbg "agent=$agent"
+dbg "workspace_id=$workspace_id"
+dbg "workspace=$workspace"
+dbg "tab_id=$tab_id"
+dbg "cwd=$cwd"
+
 if [ -z "$new_status" ]; then
-  log "no status in event; nothing to do"
-  exit 0
+  # Anomalous: this handler is bound to pane.agent_status_changed, so an event
+  # with no resolvable status usually means a schema/parse problem worth seeing.
+  drop --loud "reason=nostatus (event/context/herdr carried no agent_status)"
 fi
 
 # Per-pane previous status: the event carries only the new status, so we track
@@ -119,17 +156,18 @@ if [ -n "$pane_id" ]; then
   [ -f "$laststatus_file" ] && old_status="$(cat "$laststatus_file" 2>/dev/null || true)"
   printf '%s' "$new_status" >"$laststatus_file"
 fi
+dbg "old_status=$old_status"
 
 # --- 4. should this transition notify? ---------------------------------------
 case " $TRIGGER_STATUSES " in
   *" $new_status "*) : ;;
-  *) exit 0 ;;
+  *) drop "reason=trigger status=$new_status not in [$TRIGGER_STATUSES]" ;;
 esac
 
 # --- 5. suppress the workspace you are currently looking at ------------------
 if [ "${SUPPRESS_FOCUSED:-0}" = "1" ] && [ -n "$workspace_id" ]; then
   if [ "$(focused_workspace_id)" = "$workspace_id" ]; then
-    exit 0
+    drop "reason=focused ws=$workspace_id"
   fi
 fi
 
@@ -140,7 +178,7 @@ if [ -n "$pane_id" ]; then
   if [ -f "$stamp_file" ]; then
     read -r last_ts last_status <"$stamp_file" || true
     if [ "$last_status" = "$new_status" ] && [ $((now - ${last_ts:-0})) -lt "${DEBOUNCE_SECONDS:-0}" ]; then
-      exit 0
+      drop "reason=debounce pane=$pane_id status=$new_status within ${DEBOUNCE_SECONDS:-0}s"
     fi
   fi
   printf '%s %s\n' "$now" "$new_status" >"$stamp_file"
@@ -195,4 +233,13 @@ if [ "${ACTIVATE_ON_CLICK:-0}" = "1" ] && [ -n "$pane_id" ]; then
   args+=(-execute "$bin $click")
 fi
 
-"$NOTIFIER_BIN" "${args[@]}" >/dev/null 2>&1 || log "notifier failed"
+dbg "decision=notify title=$title"
+# Capture the notifier's stderr (dropping its stdout) so a failure surfaces the
+# actual reason instead of a bare "notifier failed". The `|| rc=$?` keeps set -e
+# from biting; the stderr is flattened to one line and length-bounded so a noisy
+# failure can't inject newlines or a wall of text into the log.
+notifier_err="$("$NOTIFIER_BIN" "${args[@]}" 2>&1 >/dev/null)" && notifier_rc=0 || notifier_rc=$?
+if [ "$notifier_rc" -ne 0 ]; then
+  notifier_err="$(printf '%s' "${notifier_err:-<no stderr>}" | tr '\n' ' ' | cut -c1-500)"
+  log "notifier failed (exit $notifier_rc): $notifier_err"
+fi
