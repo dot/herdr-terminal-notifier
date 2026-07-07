@@ -666,6 +666,96 @@ test_env_only_override_beats_builtin_default() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- issue #8: -execute click command must be built with shell quoting -------
+# terminal-notifier re-parses the -execute string through a shell. The template
+# words of CLICK_COMMAND stay unquoted (word-split into argv), but the bin path
+# and every substituted value must be `printf %q`-escaped so metacharacters in a
+# value (or a spaced binary path) can never inject into the click handler.
+# (Appended at the END to minimize merge conflicts with parallel work.)
+
+# _execute_arg <notifier-args-file> -> the argv word that follows "-execute".
+# notifier-args is one argv word per line (the stub does printf '%s\n' "$@").
+_execute_arg() { awk 'p=="-execute"{print; exit} {p=$0}' "$1"; }
+
+# Happy path: a plain pane id yields exactly `<bin> agent focus <pane>`, proving
+# the quoting is transparent for benign values (no regression).
+test_click_execute_happy_path() {
+  CURRENT_TEST="click_execute_happy_path"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"   # absolute stub path -> command -v returns it as-is
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'ACTIVATE_ON_CLICK=1' 'CLICK_COMMAND="agent focus {pane}"'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on happy path"
+  if [ -f "$T/bin/notifier-args" ]; then
+    local exec_str; exec_str="$(_execute_arg "$T/bin/notifier-args")"
+    assert_eq "$exec_str" "$HERDR_BIN agent focus p1" "-execute is '<bin> agent focus <pane>' for a plain pane id"
+  else
+    fail "notifier must fire on a triggering click event"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# Hostile values: pane_id/agent carrying spaces, ';', '$(...)', quotes must land
+# in the -execute string only in %q-escaped form. Proven two ways: (1) the raw
+# ';' injection sequence is absent, and (2) an eval round-trip (`set -- $exec`)
+# in a sandbox reproduces the EXACT argv words AND does not run the embedded
+# `$(touch PWNED)` — i.e. no command substitution escapes the quoting.
+test_click_execute_hostile_values() {
+  CURRENT_TEST="click_execute_hostile_values"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin")"
+  TN_CONFIG="$T/config.env"
+  local pwn="$T/PWNED"
+  local hostile_pane="p1; touch $pwn; \$(touch $pwn) 'q\""
+  local hostile_agent="a\$(touch $pwn)b"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'ACTIVATE_ON_CLICK=1' 'CLICK_COMMAND="agent focus {pane} {agent}"'
+  EVENT_JSON="$(jq -nc --arg p "$hostile_pane" --arg a "$hostile_agent" \
+    '{data:{pane_id:$p,agent_status:"done",agent:$a,workspace_id:"w1"}}')"
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on hostile click values"
+  local exec_str; exec_str="$(_execute_arg "$T/bin/notifier-args")"
+  # No raw injection sequence: the ';' must have been escaped (\;), never bare.
+  assert_not_contains "$exec_str" "; touch" "hostile ';' must be %q-escaped, not raw"
+  # eval round-trip in a subshell: prove word-for-word argv and no side effects.
+  local roundtrip
+  roundtrip="$(bash -c 'set -- '"$exec_str"'; printf "%s\n" "$#" "$@"' 2>/dev/null)"
+  # Expected argv: bin, agent, focus, <hostile_pane>, <hostile_agent> => 5 words.
+  local want; want="$(printf '%s\n' 5 "$HERDR_BIN" agent focus "$hostile_pane" "$hostile_agent")"
+  assert_eq "$roundtrip" "$want" "eval round-trip reproduces the exact argv words"
+  [ ! -e "$pwn" ] || fail "embedded \$(touch) must NOT execute (quoting failed: PWNED created)"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# A herdr binary path containing a space must be handled: %q-escaping the bin
+# keeps it a single argv word through the -execute shell re-parse.
+test_click_execute_spaced_bin_path() {
+  CURRENT_TEST="click_execute_spaced_bin_path"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  mkdir -p "$T/sp ace"
+  HERDR_BIN="$(make_herdr "$T/sp ace")"   # path contains a space
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'ACTIVATE_ON_CLICK=1' 'CLICK_COMMAND="agent focus {pane}"'
+  EVENT_JSON='{"data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0"
+  local exec_str; exec_str="$(_execute_arg "$T/bin/notifier-args")"
+  local roundtrip
+  roundtrip="$(bash -c 'set -- '"$exec_str"'; printf "%s\n" "$#" "$1"')"
+  assert_eq "$roundtrip" "$(printf '%s\n' 4 "$HERDR_BIN")" "spaced bin path stays a single argv word"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -689,7 +779,10 @@ for t in \
   test_old_status_tracked_across_nontrigger \
   test_env_notifier_override_honored \
   test_config_beats_env_for_same_key \
-  test_env_only_override_beats_builtin_default; do
+  test_env_only_override_beats_builtin_default \
+  test_click_execute_happy_path \
+  test_click_execute_hostile_values \
+  test_click_execute_spaced_bin_path; do
   PRE_FAIL="$FAIL"
   "$t"
 done

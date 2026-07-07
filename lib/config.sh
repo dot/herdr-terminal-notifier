@@ -56,6 +56,11 @@ _tn_default ACTIVATE_ON_CLICK "1"
 # How to focus on click. {pane}/{workspace}/{agent} are substituted.
 # `agent focus <pane>` lands on the exact agent; `workspace focus <workspace>`
 # is a coarser fallback if your herdr build dislikes pane targets.
+# The template's literal words are shell-word-split into command arguments, but
+# each substituted VALUE is shell-quoted, so it becomes exactly one literal
+# argument and can't inject shell syntax into the click handler. Do NOT quote
+# placeholders yourself ("{pane}") — values arrive pre-quoted and would end up
+# double-escaped.
 _tn_default CLICK_COMMAND "agent focus {pane}"
 
 # Notifier binary. Empty = use the bundled assets/HerdrNotify.app (herdr icon),
