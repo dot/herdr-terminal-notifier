@@ -296,11 +296,19 @@ if [ -n "$icon" ]; then
 fi
 
 if [ "$ACTIVATE_ON_CLICK" = "1" ] && [ -n "$pane_id" ]; then
+  # terminal-notifier runs -execute through a shell, so this string is re-parsed
+  # as a command line. CLICK_COMMAND is trusted config and its literal words
+  # (e.g. `agent focus`) must stay unquoted so the shell word-splits them into
+  # argv; but the binary path and every substituted VALUE are quoted with
+  # `printf %q` so a path/id/agent containing spaces or shell metacharacters
+  # (`;`, `$(...)`, quotes) becomes exactly one literal argument and can never
+  # inject into the click handler. (%q of an empty string yields '', which is
+  # a harmless empty argument.)
   bin="$(command -v "$HERDR_BIN" || printf '%s' "$HERDR_BIN")"
-  click="${CLICK_COMMAND//\{pane\}/$pane_id}"
-  click="${click//\{workspace\}/$workspace_id}"
-  click="${click//\{agent\}/$agent}"
-  args+=(-execute "$bin $click")
+  click="${CLICK_COMMAND//\{pane\}/$(printf '%q' "$pane_id")}"
+  click="${click//\{workspace\}/$(printf '%q' "$workspace_id")}"
+  click="${click//\{agent\}/$(printf '%q' "$agent")}"
+  args+=(-execute "$(printf '%q' "$bin") $click")
 fi
 
 dbg "decision=notify title=$title"
