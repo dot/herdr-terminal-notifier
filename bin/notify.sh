@@ -12,6 +12,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/lib/config.sh"
 # shellcheck source=lib/herdr.sh
 . "$ROOT/lib/herdr.sh"
+# shellcheck source=lib/macos.sh
+. "$ROOT/lib/macos.sh"
 
 STATE_DIR="${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}/herdr-tn}"
 mkdir -p "$STATE_DIR"
@@ -198,9 +200,21 @@ case " $TRIGGER_STATUSES " in
 esac
 
 # --- 5. suppress the workspace you are currently looking at ------------------
+# Two conditions must BOTH hold to suppress: the event's workspace is the one
+# focused inside herdr, AND the terminal hosting herdr is the frontmost macOS
+# app. Checking only the former (the old behavior) muted exactly the case that
+# matters — you started an agent, then switched to the browser: the workspace
+# stays focused inside herdr, so the blocked/done alert got dropped while you
+# were away. Frontmost detection FAILS OPEN: if lsappinfo is missing/unparsable
+# or TERMINAL_APP_IDS is empty, `front` is empty, no id matches, and we notify.
 if [ "${SUPPRESS_FOCUSED:-0}" = "1" ] && [ -n "$workspace_id" ]; then
   if [ "$(focused_workspace_id)" = "$workspace_id" ]; then
-    drop "reason=focused ws=$workspace_id"
+    front="$(frontmost_bundle_id)"
+    if [ -n "$front" ] && [ -n "${TERMINAL_APP_IDS:-}" ] \
+       && case " $TERMINAL_APP_IDS " in *" $front "*) true ;; *) false ;; esac; then
+      drop "reason=focused ws=$workspace_id frontmost=$front"
+    fi
+    dbg "focus-suppress skipped: ws=$workspace_id focused but terminal not frontmost (front=${front:-<none>} terminals=[${TERMINAL_APP_IDS:-}])"
   fi
 fi
 
