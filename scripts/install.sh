@@ -46,10 +46,12 @@ if ! command -v "$HERDR" >/dev/null 2>&1; then
 fi
 
 # `herdr plugin list` prints one line per plugin: "- <id> (<desc>) <state> [...]".
-# Match the id field exactly with a fixed string (leading "- ", trailing space);
-# grep -F avoids the '.' in the id being treated as a regex wildcard. --force
-# skips this short-circuit so a declarative bump can reinstall/update.
-if [ "$force" -eq 0 ] && "$HERDR" plugin list 2>/dev/null | grep -qF -- "- $PLUGIN_ID "; then
+# Match the id as the exact second whitespace-field of a "- <id> ..." line: no
+# regex (the '.' in the id stays literal) and no substring false positive when
+# another plugin's description happens to contain the id. --force skips this
+# short-circuit so a declarative bump can reinstall/update.
+if [ "$force" -eq 0 ] && "$HERDR" plugin list 2>/dev/null \
+    | awk -v id="$PLUGIN_ID" '$1 == "-" && $2 == id { found=1 } END { exit !found }'; then
   echo "$PLUGIN_ID already installed; nothing to do (pass --force to reinstall/update)"
   exit 0
 fi
