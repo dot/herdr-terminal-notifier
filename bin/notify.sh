@@ -129,10 +129,23 @@ fi
 ev()  { printf '%s' "$EVENT_JSON"   | jq -r "$1 // empty" 2>/dev/null || true; }
 ctx() { printf '%s' "$CONTEXT_JSON" | jq -r "$1 // empty" 2>/dev/null || true; }
 
-pane_id="$(ev '.data.pane_id')";          [ -n "$pane_id" ]      || pane_id="$(ctx '.focused_pane_id')"
-new_status="$(ev '.data.agent_status')";  [ -n "$new_status" ]   || new_status="$(ctx '.focused_pane_status')"
-agent="$(ev '.data.agent')";              [ -n "$agent" ]        || agent="$(ctx '.focused_pane_agent')"
-workspace_id="$(ev '.data.workspace_id')";[ -n "$workspace_id" ] || workspace_id="$(ctx '.workspace_id')"
+# Identity fields (pane_id, agent_status, workspace_id, agent) come from the
+# EVENT ONLY, then live pane_field enrichment keyed by the REAL pane id below.
+# They deliberately have NO focused-pane/-workspace context fallback: the event
+# may be about a background pane, so guessing from what the user is looking at
+# misattributes titles/bodies/click targets and, because the focused workspace
+# by definition matches SUPPRESS_FOCUSED, would silence every notification.
+# Only cosmetic fields (workspace_label, cwd, tab_id) keep a harmless ctx fallback.
+pane_id="$(ev '.data.pane_id')"
+if [ -z "$pane_id" ]; then
+  # No pane id => cannot attribute or enrich, and guessing the focused pane is
+  # the exact misattribution we are avoiding. Schema drift is anomalous: surface
+  # it loudly rather than silently re-target a random event.
+  drop --loud "reason=nopane (event carried no .data.pane_id)"
+fi
+new_status="$(ev '.data.agent_status')"
+agent="$(ev '.data.agent')"
+workspace_id="$(ev '.data.workspace_id')"
 workspace="$(ctx '.workspace_label')"
 tab_id="$(ctx '.tab_id')"
 cwd="$(ctx '.workspace_cwd')";            [ -n "$cwd" ]          || cwd="$(ctx '.focused_pane_cwd')"

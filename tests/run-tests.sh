@@ -293,6 +293,91 @@ test_debug_dump() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- #2: event fields must not fall back to focused-pane context -------------
+# A fake herdr whose `pane get` returns a caller-supplied pane object, so a test
+# can exercise pane_field enrichment keyed by the REAL pane id (vs guessing the
+# focused pane). Appended here (not folded into make_herdr) to keep the diff off
+# the shared fixture builders.
+make_herdr_pane() { # <dir> <pane_json> [focused_ws]
+  local dir="$1" pane_json="$2" focused="${3:-}"
+  local f="$dir/herdr"
+  {
+    printf '#!/usr/bin/env bash\n'
+    # shellcheck disable=SC2016
+    printf 'printf "%%s\\n" "$*" >>"%s/herdr-calls"\n' "$dir"
+    # shellcheck disable=SC2016
+    printf 'case "$1 $2" in\n'
+    printf '  "workspace list") printf %q ;;\n' "{\"result\":{\"workspaces\":[{\"workspace_id\":\"$focused\",\"focused\":true}]}}"
+    printf '  "pane get") printf %q ;;\n' "{\"result\":{\"pane\":$pane_json}}"
+    printf '  "workspace get") printf %q ;;\n' '{"result":{"workspace":{}}}'
+    printf '  *) printf "{}" ;;\n'
+    printf 'esac\n'
+  } >"$f"
+  chmod +x "$f"
+  printf '%s' "$f"
+}
+
+test_missing_pane_id_loud_drop() {
+  CURRENT_TEST="missing_pane_id_loud_drop"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr "$T/bin" "w1")"   # w1 focused (must not matter)
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=1'
+  # Event about SOME pane but the pane_id field is absent (schema drift). The old
+  # code guessed ctx.focused_pane_id; now this must loudly drop, never guess.
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{"focused_pane_id":"pFOCUSED","workspace_id":"w1"}'
+  # DEBUG off: nopane is an anomaly (--loud) and must log unconditionally.
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on missing pane_id"
+  assert_contains "$REPLY_ERR" "drop reason=nopane" "logs nopane drop reason unconditionally"
+  assert_not_contains "$REPLY_ERR" "pFOCUSED" "must not fall back to focused pane id"
+  [ ! -f "$T/bin/notifier-args" ] || fail "notifier must not fire when pane_id is missing"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+test_missing_status_enriched_via_pane_field() {
+  CURRENT_TEST="missing_status_enriched_via_pane_field"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  # Event lacks agent_status; live pane get (keyed by the real pane id) carries it.
+  HERDR_BIN="$(make_herdr_pane "$T/bin" '{"agent_status":"done","workspace_id":"w1","agent":"claude"}')"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0'
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1"}}'
+  CONTEXT_JSON='{"focused_pane_status":"working"}'   # would misattribute if used
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on enriched status"
+  assert_not_contains "$REPLY_ERR" "drop reason=nostatus" "must not drop: status enriched from pane_field"
+  assert_contains "$(cat "$T/bin/herdr-calls" 2>/dev/null || true)" "pane get p1" "enriches via the REAL pane id, not the focused pane"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_contains "$(cat "$T/bin/notifier-args")" "done" "title reflects the enriched (not focused) status"
+  else
+    fail "notifier must fire once status is enriched to a triggering value"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+test_workspace_id_via_pane_field_not_ctx() {
+  CURRENT_TEST="workspace_id_via_pane_field_not_ctx"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  # Focused workspace is wFOCUSED. The event is about a background pane whose real
+  # workspace (from pane get) is wREAL. Old code fell back to ctx.workspace_id
+  # (== the focused ws) and SUPPRESS_FOCUSED silenced EVERY event. It must not.
+  HERDR_BIN="$(make_herdr_pane "$T/bin" '{"workspace_id":"wREAL","agent":"claude"}' "wFOCUSED")"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=1'
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"done"}}'
+  CONTEXT_JSON='{"workspace_id":"wFOCUSED"}'   # the focused ws; must NOT be used
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0"
+  assert_not_contains "$REPLY_ERR" "drop reason=focused" "background pane must not be suppressed as focused"
+  [ -f "$T/bin/notifier-args" ] || fail "notifier must fire: real ws (wREAL) != focused (wFOCUSED)"
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- run ---------------------------------------------------------------------
 for t in \
   test_trigger_drop \
@@ -302,7 +387,10 @@ for t in \
   test_jq_missing \
   test_notifier_stderr_captured \
   test_happy_path \
-  test_debug_dump; do
+  test_debug_dump \
+  test_missing_pane_id_loud_drop \
+  test_missing_status_enriched_via_pane_field \
+  test_workspace_id_via_pane_field_not_ctx; do
   PRE_FAIL="$FAIL"
   "$t"
 done
