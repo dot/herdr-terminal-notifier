@@ -132,6 +132,7 @@ Key settings:
 | `NOTIFIER` | _(bundled app)_ | absolute path to override the notifier binary |
 | `REGISTER_TTL_SECONDS` | `21600` | refresh Launch Services registration when older (self-heals left icon) |
 | `ICON_MODE` | `contentImage` | right-side image mode (`contentImage`/`appIcon`) |
+| `GROUP` | `{pane}` | notification group key (template); `""` disables grouping |
 | `TITLE_<STATUS>` / `BODY_<STATUS>` | see example | message templates |
 | `ICON_<STATUS>` / `SOUND_<STATUS>` | see example | right-side image / macOS sound |
 
@@ -141,6 +142,14 @@ status (`BLOCKED`, `DONE`, …); `*_DEFAULT` covers the rest.
 
 The **left** icon is always the herdr logo (the notifier app). `ICON_*` controls
 the optional **right-side** status image.
+
+**Grouping** (`GROUP`, default `{pane}`) sets terminal-notifier's `-group` key,
+which *replaces* any earlier notification sharing it. Per-pane grouping keeps one
+live notification per pane, but a later `done` then hides an earlier still-unread
+`blocked` from the same pane. Widen the key so states don't overwrite each other
+— `GROUP="{pane}-{new_status}"` is the "don't let done hide blocked" recipe (each
+status gets its own group). `GROUP=""` (set in a config file) disables grouping
+entirely, so every notification stacks.
 
 **Focus suppression** (`SUPPRESS_FOCUSED=1`) mutes an event only when its
 workspace is the one focused *inside herdr* **and** a terminal listed in
