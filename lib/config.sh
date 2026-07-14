@@ -101,7 +101,7 @@ _tn_default ICON_MODE "contentImage" # contentImage | appIcon
 _tn_default GROUP "{pane}"
 
 # Per-status presentation. Placeholders:
-#   {agent} {workspace} {worktree} {tab} {pane} {session} {old_status} {new_status} {cwd}
+#   {agent} {workspace} {worktree} {tab} {tab_label} {pane} {session} {old_status} {new_status} {cwd}
 _tn_default TITLE_BLOCKED "⏳ {agent} needs input"
 _tn_default BODY_BLOCKED "{workspace} · {worktree}"
 _tn_default ICON_BLOCKED "assets/icons/blocked.png"

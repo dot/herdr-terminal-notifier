@@ -23,6 +23,18 @@ workspace_label() {
   [ -n "$label" ] && printf '%s' "$label" || printf '%s' "$ws"
 }
 
+# tab_label <tab_id> -> human label (falls back to the id). Mirrors
+# workspace_label; used for the {tab_label} template placeholder so a
+# notification can show a renamed tab (e.g. a synced agent session name)
+# instead of the structural tab id.
+tab_label() {
+  local t="$1" label
+  [ -n "$t" ] || return 0
+  label="$("$HERDR_BIN" tab get "$t" 2>/dev/null \
+    | jq -r '(.result.tab.label) // empty' 2>/dev/null || true)"
+  [ -n "$label" ] && printf '%s' "$label" || printf '%s' "$t"
+}
+
 # focused_workspace_id -> the workspace the user is currently looking at
 focused_workspace_id() {
   "$HERDR_BIN" workspace list 2>/dev/null \
