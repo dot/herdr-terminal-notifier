@@ -136,9 +136,23 @@ Key settings:
 | `TITLE_<STATUS>` / `BODY_<STATUS>` | see example | message templates |
 | `ICON_<STATUS>` / `SOUND_<STATUS>` | see example | right-side image / macOS sound |
 
-Template placeholders: `{agent}` `{workspace}` `{worktree}` `{tab}` `{pane}`
-`{session}` `{old_status}` `{new_status}` `{cwd}`. `<STATUS>` is the upper-cased
-status (`BLOCKED`, `DONE`, …); `*_DEFAULT` covers the rest.
+Template placeholders: `{agent}` `{workspace}` `{worktree}` `{tab}` `{tab_label}`
+`{title}` `{pane}` `{session}` `{old_status}` `{new_status}` `{cwd}`. `<STATUS>` is
+the upper-cased status (`BLOCKED`, `DONE`, …); `*_DEFAULT` covers the rest.
+
+`{tab_label}` is the tab's human label (a renamed tab), falling back to the tab
+id. `{title}` is the pane's own terminal title as reported by herdr
+(`terminal_title_stripped`, the agent status glyph removed) — for Claude Code or
+Codex that is the session summary, so it says *which task* finished rather than
+only which project. It falls back to `{tab_label}` when the pane has no title.
+A "which pane was that?" layout:
+
+```sh
+TITLE_DONE="{title}"
+BODY_DONE="✅ {agent} done · {workspace} · {tab_label}"
+TITLE_BLOCKED="{title}"
+BODY_BLOCKED="⏳ {agent} needs input · {workspace} · {tab_label}"
+```
 
 The **left** icon is always the herdr logo (the notifier app). `ICON_*` controls
 the optional **right-side** status image.

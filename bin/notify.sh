@@ -236,6 +236,14 @@ session="$(pane_field "$pane_id" '.agent_session.value')"
 [ -n "$cwd" ]          || cwd="$(pane_field "$pane_id" '.cwd')"
 [ -n "$workspace" ]    || workspace="$(workspace_label "$workspace_id")"
 tab="$(tab_label "$tab_id")"
+# {title}: the title the program inside the pane last set (herdr's
+# terminal_title_stripped, i.e. with the agent status glyph removed) — e.g. the
+# Claude Code / Codex session summary. It is the most specific "which task is
+# this?" label available and only exists in live pane state. A pane with no
+# title falls back to the tab label so a template made of just "{title}" never
+# renders an empty notification title.
+pane_title="$(pane_field "$pane_id" '.terminal_title_stripped')"
+[ -n "$pane_title" ] || pane_title="$tab"
 
 [ -n "$workspace" ] || workspace="$workspace_id"
 [ -n "$agent" ]     || agent="agent"
@@ -247,6 +255,7 @@ dbg "agent=$agent"
 dbg "workspace_id=$workspace_id"
 dbg "workspace=$workspace"
 dbg "tab_id=$tab_id"
+dbg "title=$pane_title"
 dbg "cwd=$cwd"
 
 # --- 5. suppress the workspace you are currently looking at ------------------
@@ -320,6 +329,7 @@ expand() {
   s="${s//\{worktree\}/$worktree}"
   s="${s//\{tab\}/$tab_id}"
   s="${s//\{tab_label\}/$tab}"
+  s="${s//\{title\}/$pane_title}"
   s="${s//\{pane\}/$pane_id}"
   s="${s//\{session\}/$session}"
   s="${s//\{cwd\}/$cwd}"

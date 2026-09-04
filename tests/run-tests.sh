@@ -590,6 +590,55 @@ test_old_status_tracked_across_nontrigger() {
   [ "$FAIL" -eq "$PRE_FAIL" ] && pass
 }
 
+# --- {title} placeholder ------------------------------------------------------
+# {title} is the pane's own terminal title (terminal_title_stripped), which only
+# exists in live pane state: a triggering event must enrich it via `pane get`
+# and hand it to the notifier.
+test_title_placeholder_from_pane() {
+  CURRENT_TEST="title_placeholder_from_pane"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  HERDR_BIN="$(make_herdr_pane "$T/bin" '{"terminal_title_stripped":"Fix flaky login test","tab_id":"w1:t3","workspace_id":"w1","agent":"claude"}')"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'TITLE_DONE="{title}"' 'BODY_DONE="{agent} done"'
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on triggering event"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_contains "$(cat "$T/bin/notifier-args")" $'-title\nFix flaky login test\n' "notifier title carries the pane's terminal title"
+  else
+    fail "notifier must fire on a triggering event"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
+# A pane without a terminal title must not render an empty notification title:
+# {title} falls back to {tab_label} (which itself falls back to the tab id).
+test_title_placeholder_falls_back_to_tab_label() {
+  CURRENT_TEST="title_placeholder_falls_back_to_tab_label"
+  new_temp
+  local n; n="$(make_notifier "$T/bin")"
+  # No terminal_title_stripped; the stub herdr answers `tab get` with {} so the
+  # tab label falls back to the tab id.
+  HERDR_BIN="$(make_herdr_pane "$T/bin" '{"tab_id":"w1:t3","workspace_id":"w1","agent":"claude"}')"
+  TN_CONFIG="$T/config.env"
+  make_config "$TN_CONFIG" "NOTIFIER=$n" 'TRIGGER_STATUSES="blocked done"' 'SUPPRESS_FOCUSED=0' \
+    'TITLE_DONE="{title}"' 'BODY_DONE="{agent} done"'
+  EVENT_JSON='{"event":"pane.agent_status_changed","data":{"pane_id":"p1","agent_status":"done","agent":"claude","workspace_id":"w1"}}'
+  CONTEXT_JSON='{}'
+  run_notify
+  assert_eq "$REPLY_RC" 0 "exit 0 on triggering event"
+  if [ -f "$T/bin/notifier-args" ]; then
+    assert_contains "$(cat "$T/bin/notifier-args")" $'-title\nw1:t3\n' "empty pane title falls back to the tab label/id"
+    assert_not_contains "$(cat "$T/bin/notifier-args")" $'-title\n\n' "notification title must never be empty"
+  else
+    fail "notifier must fire on a triggering event"
+  fi
+  [ "$FAIL" -eq "$PRE_FAIL" ] && pass
+}
+
 # --- issue #5: every config key is env-overridable ---------------------------
 # config.sh assigns defaults as ${VAR:-default}, so an exported env var wins over
 # the built-in default, while the config files (config.env, HERDR_TN_CONFIG) are
@@ -1033,7 +1082,9 @@ for t in \
   test_state_sweep_not_repeated_same_day \
   test_group_default_is_pane \
   test_group_template_expands \
-  test_group_empty_disables; do
+  test_group_empty_disables \
+  test_title_placeholder_from_pane \
+  test_title_placeholder_falls_back_to_tab_label; do
   PRE_FAIL="$FAIL"
   "$t"
 done
